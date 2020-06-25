@@ -16,11 +16,11 @@ function setup(){
 }
 
 function LoadSounds(){
-    soundEffects.push(loadSound('data/sound/sfx_point.wav'));
-    soundEffects.push(loadSound('data/sound/sfx_die.wav'));
-    soundEffects.push(loadSound('data/sound/sfx_hit.wav'));
-    soundEffects.push(loadSound('data/sound/sfx_swooshing.wav'));
-    soundEffects.push(loadSound('data/sound/sfx_wing.wav'));
+    soundEffects.push(loadSound('data/flappybird/sound/sfx_point.wav'));
+    soundEffects.push(loadSound('data/flappybird/sound/sfx_die.wav'));
+    soundEffects.push(loadSound('data/flappybird/sound/sfx_hit.wav'));
+    soundEffects.push(loadSound('data/flappybird/sound/sfx_swooshing.wav'));
+    soundEffects.push(loadSound('data/flappybird/sound/sfx_wing.wav'));
 }
 
 function start(){
