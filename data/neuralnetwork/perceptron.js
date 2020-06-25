@@ -19,4 +19,10 @@ class Perceptron {
         }
         return sum >= 0 ? sum : 0;           //ReLu function
     }
+
+    mutate(mutateRate){
+        for (let i = 0; i < this.weights.length; i++) {
+            this.weights[i] += mutateRate;
+        }
+    }
 }

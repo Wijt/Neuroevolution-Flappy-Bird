@@ -22,4 +22,16 @@ class NeuralNetwork {
         }
         return previousOutputs;
     }
+    
+    copy(){
+       return Object.assign({}, this);
+    }
+
+    mutate(){
+        for (let i = 0; i < this.perceptrons.length; i++) {
+            for (let j=0; j < this.perceptrons[i].length; j++){
+                this.perceptrons[i][j].mutate();
+            }
+        }
+    }
 }
