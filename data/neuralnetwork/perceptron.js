@@ -20,12 +20,12 @@ class Perceptron {
         return sum >= 0 ? sum : 0;           //ReLu function
     }
 
-    train(inputs){
+    /*train(inputs){
         let answer = this.fire(inputs);
         let orj = inputs[1] < separators[0].func(inputs[0]) ? 1 : -1;
         let error = orj - answer;
         for (let i = 0; i < this.weights.length; i++) {
             this.weights[i] +=  (orj - answer) * inputs[i] * this.learingRate;
         }
-    }
+    }*/ // NO NEED to train function.
 }

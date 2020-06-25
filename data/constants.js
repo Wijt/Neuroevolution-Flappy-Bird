@@ -1,5 +1,4 @@
 //#region BIRD
-
 BIRD_R = 25;
 BIRD_JUMP_POWER = 6;
 //#endregion
@@ -15,12 +14,16 @@ GROUND_HEIGHT = 25;
 
 DEBUG_MODE = false;
 
-
-
 BIRD_COLOR = "#e43f5a";
 PIPE_COLOR = "#1f4068";
 GROUND_COLOR = "#162447"
 BG_COLOR = "#1b1b2f";
+
+
+//#region PERCEPTRON
+PERCEPTRON_LEARING_RATE = 0.1;
+//#endregion
+
 
 /*
 BIRD_COLOR = "#4f8a8b";
