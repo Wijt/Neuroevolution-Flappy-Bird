@@ -22,12 +22,4 @@ class NeuralNetwork {
         }
         return previousOutputs;
     }
-
-    /*train(inputs, targets){
-        let result = this.feedForward(inputs);
-        let frontLayerError = [];
-        for(let i = this.perceptrons.length-1; i >= 0; i--){
-            let layerError = [];
-        }
-    }*/ // NO NEED to train function.
 }
