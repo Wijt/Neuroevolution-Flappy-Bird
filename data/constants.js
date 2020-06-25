@@ -1,5 +1,6 @@
 //#region BIRD
 BIRD_R = 25;
+BIRD_X = 200;
 BIRD_JUMP_POWER = 6;
 //#endregion
 
@@ -34,7 +35,7 @@ PERCEPTRON_LEARING_RATE = 0.1;
 //#endregion
 
 //#region EVULATION
-POPULATION_SIZE = 500;
+POPULATION_SIZE = 2;
 MUTATION_CHANCE = 0.1;
 //#endregion
 

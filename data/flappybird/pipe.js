@@ -32,6 +32,16 @@ class Pipe {
             rect(this.bottomPipe.x1, this.bottomPipe.y1, this.width, this.bottomPipe.y2);
         pop();
     }
+
+    debugShow(){
+        push();
+            noStroke();
+            fill(color(255));
+            rectMode(CORNER);
+            rect(this.topPipe.x1, this.topPipe.y1, this.width, this.topPipe.y2);
+            rect(this.bottomPipe.x1, this.bottomPipe.y1, this.width, this.bottomPipe.y2);
+        pop();
+    }
     
     isCollide(bird){
         //return isInside(bird.pos, this.topPipe) || isInside(bird.pos, this.bottomPipe);

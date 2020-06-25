@@ -1,6 +1,7 @@
 let birds = [];
+let deadBirds = [];
 let pipes = [];
-
+let nextPipe;
 let soundEffects = [];
 
 function setup(){
@@ -11,12 +12,12 @@ function setup(){
 
 
 function start(){
-    pipes = [];
-    
+    pipes = [];    
     let pipeCount = width / (PIPE_BETWEEN + PIPE_WIDTH);
     for (let i = 1; i <= pipeCount + 2; i++) {
         new Pipe(width + i * (PIPE_BETWEEN + PIPE_WIDTH), random(PIPE_NO_GAP_ZONE, height-PIPE_NO_GAP_ZONE));
     }
+    nextPipe = pipes[0];
 
     setPopulation();
 }
@@ -30,8 +31,9 @@ function draw(){
         background(color(BG_COLOR));
     pop();
 
-    pipes.forEach(element => {
-        element.show();
+    pipes.forEach(pipe => {
+        pipe.show();
+        nextPipe != null ? nextPipe.debugShow() : null;
     });
 
     push();
@@ -40,36 +42,56 @@ function draw(){
         rect(0, height - GROUND_HEIGHT, width, GROUND_HEIGHT);
     pop();
 
+    birds.forEach(bird => {
+        bird.show();
+    });
 
-    bird.show();
-
-
-    push();
+    /*push();
         textAlign(CENTER);
         fill(255);
         textSize(60);
         text(bird.point, width/2,60);
-    pop();
+    pop();*/
 }
 
 function update() {
-    bird.update();
-    if(bird.live){
-        pipes.forEach(element => {
-            element.update();
-            if(element.pos.x <= bird.pos.x + PIPE_WIDTH && element.pos.x >= bird.pos.x - PIPE_WIDTH){
-                if (element.isCollide(bird)){
-                    bird.die();
-                }
-                if (element.pos.x <= bird.pos.x && element.hasPoint){
-                    element.hasPoint = false;
-                    bird.point++;
-                }
-            }
-        });
+    birds.forEach(bird => {
+        bird.update();
+        if (nextPipe.isCollide(bird)){
+            bird.die();
+        }
+        if (nextPipe.pos.x <= bird.pos.x){
+            bird.point++;
+        }
+    });
+
+    pipes.forEach(pipe => {
+        pipe.update();
+        if(pipe.pos.x <= BIRD_X + PIPE_WIDTH && pipe.pos.x >= BIRD_X - PIPE_WIDTH){
+            nextPipe = pipe;
+        }
+    });
+
+    if(birds.length == 0){
+        start();
     }
+
+/*
+    pipes.forEach(pipe => {
+        pipe.update();
+        if(pipe.pos.x <= bird.pos.x + PIPE_WIDTH && pipe.pos.x >= bird.pos.x - PIPE_WIDTH){
+            if (pipe.isCollide(bird)){
+                bird.die();
+            }
+            if (pipe.pos.x <= bird.pos.x && pipe.hasPoint){
+                pipe.hasPoint = false;
+                bird.point++;
+            }
+        }
+    });*/
 }
 
+/*
 function mouseReleased(){
     if (bird.live){
         bird.jump();
@@ -77,7 +99,8 @@ function mouseReleased(){
         start();
     }
 }
-
+*/
+/*
 function keyReleased(){
     if(keyCode == 32){ //32 for space bar
         if (bird.live){
@@ -87,7 +110,7 @@ function keyReleased(){
         }
     }
 }
-
+*/
 
 
 

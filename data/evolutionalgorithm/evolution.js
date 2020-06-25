@@ -9,15 +9,16 @@ function giveMutateRate(chance){
 function setPopulation(){
     let fittest = getFittestBird();
     birds = [];
+    deadBirds = [];
     for (let i = 0; i < POPULATION_SIZE; i++) {
-        new Bird(100, 200, fittest.brain || null);
+        new Bird(100, 500, fittest.brain || null);
     }
 }
 
 function getFittestBird(){
-    birds.sort(function(a, b){
+    deadBirds.sort(function(a, b){
         return a.fitness - b.fitness;
     });
-    console.log(birds);
-    return birds[0];
+    console.log(deadBirds);
+    return deadBirds[0] || new Bird(100, 500);
 }
