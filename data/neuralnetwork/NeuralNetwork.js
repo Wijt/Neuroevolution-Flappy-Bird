@@ -30,7 +30,7 @@ class NeuralNetwork {
     mutate(){
         for (let i = 0; i < this.perceptrons.length; i++) {
             for (let j=0; j < this.perceptrons[i].length; j++){
-                this.perceptrons[i][j].mutate();
+                this.perceptrons[i][j].mutate(giveMutateRate(0.1));
             }
         }
     }
