@@ -1,11 +1,17 @@
 class Bird {
-    constructor(x, y) {
+    constructor(x, y, brain) {
         this.pos = {x: x, y: y};
         this.radius = BIRD_R,
 
         this.live = true;
         this.point = 0;
         this.velocity = 0;
+
+        this.brain = brain || new NeuralNetwork([4,8,8,1]);
+        this.brain.mutate();
+        this.fitness = 0;
+        
+        birds.push(this);
     }
 
     show(){
@@ -16,6 +22,10 @@ class Bird {
         pop();
     }
 
+    think(){
+
+    }
+
     jump(){
         try { soundEffects[4].play(); } catch(e) {}
         this.velocity = 0;
@@ -24,10 +34,7 @@ class Bird {
 
     die(){
         console.warn("HIT!");
-        
         this.live = false;
-        try { soundEffects[2].play(); } catch(e) {}
-        try { soundEffects[1].play(); } catch(e) {}
     }
 
     update() {
@@ -39,7 +46,7 @@ class Bird {
 
         if(this.pos.y < height - GROUND_HEIGHT){
             this.pos.y += this.velocity;
-            this.velocity += 0.4;
+            this.velocity += GRAVITY;
         }else{
             this.pos.y = height - GROUND_HEIGHT;
         }

@@ -1,13 +1,7 @@
-let bird;
-let gravity = 1;
-
+let birds = [];
 let pipes = [];
 
 let soundEffects = [];
-
-function preload() {
-    LoadSounds();
-}
 
 function setup(){
     //frameRate(60);
@@ -15,26 +9,23 @@ function setup(){
     start();
 }
 
-function LoadSounds(){
-    soundEffects.push(loadSound('data/flappybird/sound/sfx_point.wav'));
-    soundEffects.push(loadSound('data/flappybird/sound/sfx_die.wav'));
-    soundEffects.push(loadSound('data/flappybird/sound/sfx_hit.wav'));
-    soundEffects.push(loadSound('data/flappybird/sound/sfx_swooshing.wav'));
-    soundEffects.push(loadSound('data/flappybird/sound/sfx_wing.wav'));
-}
 
 function start(){
     pipes = [];
-    bird = new Bird(100,250);
+    
     let pipeCount = width / (PIPE_BETWEEN + PIPE_WIDTH);
     for (let i = 1; i <= pipeCount + 2; i++) {
         new Pipe(width + i * (PIPE_BETWEEN + PIPE_WIDTH), random(PIPE_NO_GAP_ZONE, height-PIPE_NO_GAP_ZONE));
     }
+
+    setPopulation();
 }
 
 
 
 function draw(){
+    update();
+
     push();
         background(color(BG_COLOR));
     pop();
@@ -59,8 +50,6 @@ function draw(){
         textSize(60);
         text(bird.point, width/2,60);
     pop();
-
-    update();
 }
 
 function update() {
@@ -74,7 +63,6 @@ function update() {
                 }
                 if (element.pos.x <= bird.pos.x && element.hasPoint){
                     element.hasPoint = false;
-                    try { soundEffects[0].play(); } catch(e) {}
                     bird.point++;
                 }
             }

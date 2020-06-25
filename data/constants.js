@@ -19,6 +19,9 @@ GROUND_HEIGHT = 25;
 DEBUG_MODE = false;
 //#endregion
 
+GRAVITY = 0.4;
+
+
 //#region COLOR THEME
 BIRD_COLOR = "#e43f5a";
 PIPE_COLOR = "#1f4068";
@@ -28,6 +31,11 @@ BG_COLOR = "#1b1b2f";
 
 //#region PERCEPTRON
 PERCEPTRON_LEARING_RATE = 0.1;
+//#endregion
+
+//#region EVULATION
+POPULATION_SIZE = 500;
+MUTATION_CHANCE = 0.1;
 //#endregion
 
 
