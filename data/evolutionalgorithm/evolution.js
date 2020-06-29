@@ -11,7 +11,8 @@ function setPopulation(){
     birds = [];
     deadBirds = [];
     for (let i = 0; i < POPULATION_SIZE; i++) {
-        new Bird(100, 500, fittest.brain || null);
+        //console.log(fittest.brain, fittest.brain.copy());
+        new Bird(100, 500, fittest.brain.copy() || null);
     }
 }
 
@@ -20,5 +21,5 @@ function getFittestBird(){
         return a.fitness - b.fitness;
     });
     console.log(deadBirds);
-    return deadBirds[0] || new Bird(100, 500);
+    return deadBirds[0] || new Bird(100, 500, null);
 }

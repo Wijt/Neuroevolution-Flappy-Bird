@@ -1,5 +1,6 @@
 class NeuralNetwork {
     constructor(sizes) {//[2 2 1]
+        this.sizes = sizes;
         this.perceptrons=[];
         for (let i = 1; i < sizes.length; i++) {
             let layer=[];
@@ -24,12 +25,22 @@ class NeuralNetwork {
     }
     
     copy(){
-       return Object.assign({}, this);
+        let copy = new NeuralNetwork(this.sizes);
+        let cPerceptrons = [];
+        for (let i = 0; i < this.perceptrons.length; i++) {
+            let layer=[];
+            for (let j = 0; j < this.perceptrons[i].length; j++){
+                layer.push(this.perceptrons[i][j].copy());
+            }
+            cPerceptrons.push(layer);
+        }
+        copy.perceptrons = cPerceptrons;
+        return copy;
     }
 
     mutate(){
         for (let i = 0; i < this.perceptrons.length; i++) {
-            for (let j=0; j < this.perceptrons[i].length; j++){
+            for (let j = 0; j < this.perceptrons[i].length; j++){
                 this.perceptrons[i][j].mutate(giveMutateRate(MUTATION_CHANCE));
             }
         }

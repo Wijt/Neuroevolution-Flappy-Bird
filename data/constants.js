@@ -35,7 +35,7 @@ PERCEPTRON_LEARING_RATE = 0.1;
 //#endregion
 
 //#region EVULATION
-POPULATION_SIZE = 2;
+POPULATION_SIZE = 500;
 MUTATION_CHANCE = 0.1;
 //#endregion
 

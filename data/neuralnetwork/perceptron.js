@@ -19,6 +19,14 @@ class Perceptron {
         }
         return sum >= 0 ? sum : 0;           //ReLu function
     }
+    
+    copy(){
+        let copy = new Perceptron(this.weights.length - 1);
+        for (let i = 0; i < copy.weights.length; i++){
+            copy.weights[i] = this.weights[i];
+        }
+        return copy;
+    }
 
     mutate(mutateRate){
         for (let i = 0; i < this.weights.length; i++) {
