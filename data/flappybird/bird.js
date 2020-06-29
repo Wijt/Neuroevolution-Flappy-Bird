@@ -24,11 +24,13 @@ class Bird {
 
     think(){
         let inputs = [];
-        inputs[0] = nextPipe.pos.y;
-        inputs[1] = this.y;
+        inputs[0] = nextPipe.pos.x;
+        inputs[1] = this.pos.y;
         inputs[2] = this.velocity;
-        inputs[3] = nextPipe.bottomPipe.y1;
+        inputs[3] = nextPipe.pos.y;
+        inputs[4] = nextPipe.topPipe.y2;
         let result = this.brain.feedForward(inputs);
+        //console.log(result, inputs);
         if(result[0] > 0){
             this.jump();
         }
@@ -41,16 +43,17 @@ class Bird {
     }
 
     die(){
-        console.warn("HIT!");
+        //console.warn("HIT!");
         this.live = false;
-        birds.slice(birds.indexOf(this), 1);
+        birds.splice(birds.indexOf(this), 1);
         deadBirds.push(this);
     }
 
     update() {
-        this.think();
         if(this.live){
+            this.think();
             if (this.pos.y < 0 || this.pos.y > height - GROUND_HEIGHT){
+                this.fitness-=3000;
                 this.die();
             }
         }
@@ -61,6 +64,7 @@ class Bird {
         }else{
             this.pos.y = height - GROUND_HEIGHT;
         }
+        this.fitness += frameCount;
     }
 
 }

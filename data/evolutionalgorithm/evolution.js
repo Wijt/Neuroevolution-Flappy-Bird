@@ -21,5 +21,5 @@ function getFittestBird(){
         return a.fitness - b.fitness;
     });
     console.log(deadBirds);
-    return deadBirds[0] || new Bird(100, 500, null);
+    return deadBirds[deadBirds.length - 1] || new Bird(100, 500, null);
 }

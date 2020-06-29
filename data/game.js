@@ -15,7 +15,7 @@ function start(){
     pipes = [];    
     let pipeCount = width / (PIPE_BETWEEN + PIPE_WIDTH);
     for (let i = 1; i <= pipeCount + 2; i++) {
-        new Pipe(width + i * (PIPE_BETWEEN + PIPE_WIDTH), random(PIPE_NO_GAP_ZONE, height-PIPE_NO_GAP_ZONE));
+        new Pipe(width-300 + i * (PIPE_BETWEEN + PIPE_WIDTH), random(PIPE_NO_GAP_ZONE, height-PIPE_NO_GAP_ZONE));
     }
     nextPipe = pipes[0];
 
@@ -62,6 +62,7 @@ function update() {
         }
         if (nextPipe.pos.x <= bird.pos.x){
             bird.point++;
+            bird.fitness+=10000;
         }
     });
 
@@ -73,6 +74,7 @@ function update() {
     });
 
     if(birds.length == 0){
+        //console.log(deadBirds);
         start();
     }
 
