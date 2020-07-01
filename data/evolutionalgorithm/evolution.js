@@ -20,7 +20,6 @@ function getFittestBird(){
     deadBirds.sort(function(a, b){
         return a.fitness - b.fitness;
     });
-    console.log(deadBirds);
     return deadBirds[deadBirds.length - 1] || new Bird(BIRD_X, 500, null);
 }
 

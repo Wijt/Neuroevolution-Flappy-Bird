@@ -6,7 +6,14 @@ let soundEffects = [];
 
 function setup(){
     //frameRate(60);
-    createCanvas(windowWidth, windowHeight);
+    let cnv;
+    if(windowWidth<1000)
+        cnv = createCanvas(windowWidth, windowHeight);
+    else
+        cnv = createCanvas(375, 812);
+    let x = (windowWidth - width) / 2;
+    let y = (windowHeight - height) / 2;
+    cnv.position(x, y);
     start();
 }
 
@@ -22,9 +29,10 @@ function start(){
     setPopulation();
 }
 
-
-
 function draw(){
+    /*for (let i = 0; i < b && a; i++) {  
+        update();
+    }*/
     update();
 
     push();
@@ -61,7 +69,7 @@ function update() {
             bird.die();
         }
         if (nextPipe.pos.x <= bird.pos.x){
-            bird.point++;
+            nextPipe.hasPoint = false;
             bird.fitness+=10000;
         }
     });
