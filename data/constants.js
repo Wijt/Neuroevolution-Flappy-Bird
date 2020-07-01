@@ -1,6 +1,6 @@
 //#region BIRD
 BIRD_R = 25;
-BIRD_X = 200;
+BIRD_X = 100;
 BIRD_JUMP_POWER = 6;
 //#endregion
 
@@ -8,7 +8,7 @@ BIRD_JUMP_POWER = 6;
 PIPE_GAP_H = 125;
 PIPE_WIDTH = 50;
 PIPE_SCROOL = 3;
-PIPE_BETWEEN = 180;
+PIPE_BETWEEN = 200;
 PIPE_NO_GAP_ZONE = 150;
 //#endregion
 

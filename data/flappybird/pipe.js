@@ -40,6 +40,8 @@ class Pipe {
             rectMode(CORNER);
             rect(this.topPipe.x1, this.topPipe.y1, this.width, this.topPipe.y2);
             rect(this.bottomPipe.x1, this.bottomPipe.y1, this.width, this.bottomPipe.y2);
+            /*fill(color(255,0,0));
+            ellipse(this.bottomPipe.x2, this.bottomPipe.y1,20,20);*/
         pop();
     }
     
@@ -59,7 +61,7 @@ class Pipe {
         this.pos.x -= this.velocity;
         if (this.pos.x < -this.width/2){
             pipes.splice(this, 1);
-            new Pipe(pipes[pipes.length-1].pos.x + 200, random(150, height-150));
+            new Pipe(pipes[pipes.length-1].pos.x + PIPE_BETWEEN + PIPE_WIDTH, random(150, height-150));
         }
 
 

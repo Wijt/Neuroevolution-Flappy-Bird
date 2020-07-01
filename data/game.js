@@ -15,7 +15,7 @@ function start(){
     pipes = [];    
     let pipeCount = width / (PIPE_BETWEEN + PIPE_WIDTH);
     for (let i = 1; i <= pipeCount + 2; i++) {
-        new Pipe(width-300 + i * (PIPE_BETWEEN + PIPE_WIDTH), random(PIPE_NO_GAP_ZONE, height-PIPE_NO_GAP_ZONE));
+        new Pipe(width - PIPE_WIDTH + i * (PIPE_BETWEEN + PIPE_WIDTH), random(PIPE_NO_GAP_ZONE, height-PIPE_NO_GAP_ZONE));
     }
     nextPipe = pipes[0];
 
@@ -30,7 +30,7 @@ function draw(){
     push();
         background(color(BG_COLOR));
     pop();
-
+    
     pipes.forEach(pipe => {
         pipe.show();
         nextPipe != null ? nextPipe.debugShow() : null;
@@ -66,10 +66,16 @@ function update() {
         }
     });
 
+    let nextPipeSelected = false; //this loop start looping from the left side so 
     pipes.forEach(pipe => {
-        pipe.update();
-        if(pipe.pos.x <= BIRD_X + PIPE_WIDTH && pipe.pos.x >= BIRD_X - PIPE_WIDTH){
-            nextPipe = pipe;
+        pipe.update();      
+        if (!nextPipeSelected){
+            if(!(pipe.bottomPipe.x2 < (BIRD_X - BIRD_R/2))){ //if two pipe in this area
+                if(pipe.bottomPipe.x1 < (BIRD_X + PIPE_BETWEEN)){ //don't select further one because birds still can touch closest pipe
+                    nextPipe =  pipe;
+                    nextPipeSelected = true;
+                }
+            }
         }
     });
 
