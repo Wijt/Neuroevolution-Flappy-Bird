@@ -4,6 +4,8 @@ let pipes = [];
 let nextPipe;
 let soundEffects = [];
 
+let bestScore = 0;
+
 function setup(){
     //frameRate(60);
     let cnv;
@@ -19,7 +21,8 @@ function setup(){
 
 
 function start(){
-    pipes = [];    
+    pipes = [];
+    bestScore=0;
     let pipeCount = width / (PIPE_BETWEEN + PIPE_WIDTH);
     for (let i = 1; i <= pipeCount + 2; i++) {
         new Pipe(width - PIPE_WIDTH + i * (PIPE_BETWEEN + PIPE_WIDTH), random(PIPE_NO_GAP_ZONE, height-PIPE_NO_GAP_ZONE));
@@ -41,7 +44,7 @@ function draw(){
     
     pipes.forEach(pipe => {
         pipe.show();
-        nextPipe != null ? nextPipe.debugShow() : null;
+        //nextPipe != null ? nextPipe.debugShow() : null;
     });
 
     push();
@@ -54,12 +57,12 @@ function draw(){
         bird.show();
     });
 
-    /*push();
+    push();
         textAlign(CENTER);
         fill(255);
         textSize(60);
-        text(bird.point, width/2,60);
-    pop();*/
+        text(bestScore, width/2,60);
+    pop();
 }
 
 function update() {
@@ -69,7 +72,6 @@ function update() {
             bird.die();
         }
         if (nextPipe.pos.x <= bird.pos.x){
-            nextPipe.hasPoint = false;
             bird.fitness+=10000;
         }
     });

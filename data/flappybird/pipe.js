@@ -64,6 +64,11 @@ class Pipe {
             new Pipe(pipes[pipes.length-1].pos.x + PIPE_BETWEEN + PIPE_WIDTH, random(150, height-150));
         }
 
+        if (this.hasPoint && this.pos.x < BIRD_X){
+            bestScore++;
+            this.hasPoint = false;    
+        }
+
 
         this.topPipe = {
             x1: this.pos.x - this.width/2,

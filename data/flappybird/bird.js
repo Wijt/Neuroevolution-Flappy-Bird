@@ -7,7 +7,7 @@ class Bird {
         this.point = 0;
         this.velocity = 0;
 
-        this.brain = brain || new NeuralNetwork([4,8,8,1]);
+        this.brain = brain || new NeuralNetwork([5,32,32,32,1]);
         this.brain.mutate();
         this.fitness = 0;
         
