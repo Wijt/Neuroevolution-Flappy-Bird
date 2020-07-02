@@ -6,7 +6,18 @@ let soundEffects = [];
 
 let bestScore = 0;
 
+let geniusBirdJson;
+let geniusBirdBrain;
+
+let scene = 0;
+
+function preload(){
+    geniusBirdJson = loadJSON("data\\birdBrain_5-10-10-1_ai.json");
+}
+
 function setup(){
+    geniusBirdBrain = NeuralNetwork.deserialize(geniusBirdJson);
+    console.log(geniusBirdBrain);
     //frameRate(60);
     let cnv;
     if(windowWidth<1000)
