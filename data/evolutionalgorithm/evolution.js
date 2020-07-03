@@ -12,7 +12,8 @@ function setPopulation(){
     deadBirds = [];
     for (let i = 0; i < POPULATION_SIZE; i++) {
         //console.log(fittest.brain, fittest.brain.copy());
-        new Bird(BIRD_X, 500, fittest.brain.copy() || null);
+        let spawnedBird = new Bird(BIRD_X, 500, fittest.brain.copy() || null);
+        spawnedBird.brain.mutate();
     }
 }
 

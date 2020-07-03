@@ -1,5 +1,8 @@
 class Bird {
-    constructor(x, y, brain) {
+    constructor(x, y, brain, isPlayer) {
+        
+        this.isPlayer = isPlayer || false;
+        
         this.pos = {x: x, y: y};
         this.radius = BIRD_R,
 
@@ -8,7 +11,6 @@ class Bird {
         this.velocity = 0;
 
         this.brain = brain || new NeuralNetwork([5,10,10,1]);
-        this.brain.mutate();
         this.fitness = 0;
         
         birds.push(this);
@@ -46,12 +48,17 @@ class Bird {
         //console.warn("HIT!");
         this.live = false;
         birds.splice(birds.indexOf(this), 1);
-        deadBirds.push(this);
+        if (!this.isPlayer){
+            deadBirds.push(this);    
+        }
     }
 
     update() {
         if(this.live){
-            this.think();
+            if (!this.isPlayer){
+                this.think();
+            }
+            
             if (this.pos.y < 0 || this.pos.y > height - GROUND_HEIGHT){
                 this.fitness-=3000;
                 this.die();

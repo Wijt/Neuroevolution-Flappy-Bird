@@ -66,7 +66,10 @@ class Pipe {
 
         if (this.hasPoint && this.pos.x < BIRD_X){
             bestScore++;
-            this.hasPoint = false;    
+            this.hasPoint = false;
+            birds.forEach(bird => {
+                bird.point++;
+            });  
         }
 
 

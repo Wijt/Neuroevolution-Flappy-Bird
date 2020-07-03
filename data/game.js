@@ -1,3 +1,4 @@
+let buttons = [];
 let birds = [];
 let deadBirds = [];
 let pipes = [];
@@ -8,17 +9,21 @@ let bestScore = 0;
 
 let geniusBirdJson;
 let geniusBirdBrain;
+let geniusBird;
 
-let scene = 0;
+let player;
+
+let scene = 2;
 
 function preload(){
     geniusBirdJson = loadJSON("data\\birdBrain_5-10-10-1_ai.json");
+    console.log(geniusBirdJson);
 }
 
 function setup(){
     geniusBirdBrain = NeuralNetwork.deserialize(geniusBirdJson);
     console.log(geniusBirdBrain);
-    //frameRate(60);
+    
     let cnv;
     if(windowWidth<1000)
         cnv = createCanvas(windowWidth, windowHeight);
@@ -27,20 +32,32 @@ function setup(){
     let x = (windowWidth - width) / 2;
     let y = (windowHeight - height) / 2;
     cnv.position(x, y);
+
+    new Button(50, height-GROUND_HEIGHT/2, 75, 30, "PLAY", "#EAEAEA", function(){console.log("Player Play");});
+    new Button(135, height-GROUND_HEIGHT/2, 75, 30, "AI", "#EAEAEA", function(){console.log("AI Play");});
+    new Button(220, height-GROUND_HEIGHT/2, 75, 30, "TEACH", "#EAEAEA", function(){console.log("Teach Play");});
+
     start();
 }
 
-
 function start(){
     pipes = [];
-    bestScore=0;
+    bestScore = 0;
+    
     let pipeCount = width / (PIPE_BETWEEN + PIPE_WIDTH);
+    
     for (let i = 1; i <= pipeCount + 2; i++) {
         new Pipe(width - PIPE_WIDTH + i * (PIPE_BETWEEN + PIPE_WIDTH), random(PIPE_NO_GAP_ZONE, height-PIPE_NO_GAP_ZONE));
     }
     nextPipe = pipes[0];
 
-    setPopulation();
+    if (scene == 0){
+        bestBird = new Bird(BIRD_X, 100, geniusBirdBrain);
+    } else if(scene == 1){
+        setPopulation();
+    } else if(scene == 2){
+        player = new Bird(BIRD_X, 100, null, true); 
+    }
 }
 
 function draw(){
@@ -68,11 +85,15 @@ function draw(){
         bird.show();
     });
 
+    buttons.forEach(button => {
+        button.show();
+    });
+
     push();
         textAlign(CENTER);
         fill(255);
         textSize(60);
-        text(bestScore, width/2,60);
+        text(birds[0].point, width/2,60);
     pop();
 }
 
@@ -104,31 +125,27 @@ function update() {
         //console.log(deadBirds);
         start();
     }
-
-/*
-    pipes.forEach(pipe => {
-        pipe.update();
-        if(pipe.pos.x <= bird.pos.x + PIPE_WIDTH && pipe.pos.x >= bird.pos.x - PIPE_WIDTH){
-            if (pipe.isCollide(bird)){
-                bird.die();
-            }
-            if (pipe.pos.x <= bird.pos.x && pipe.hasPoint){
-                pipe.hasPoint = false;
-                bird.point++;
-            }
-        }
-    });*/
 }
 
-/*
+
 function mouseReleased(){
-    if (bird.live){
-        bird.jump();
-    }else{
-        start();
+    if(mouseY >= height-GROUND_HEIGHT){
+        buttons.forEach(button => {
+            if(isInside({x:mouseX, y:mouseY}, button.rect)){
+                button.func();
+            }
+        });
+        return;
+    }
+    if(scene==2){
+        if (player.live){
+            player.jump();
+        }else{
+            start();
+        }
     }
 }
-*/
+
 /*
 function keyReleased(){
     if(keyCode == 32){ //32 for space bar
@@ -140,8 +157,6 @@ function keyReleased(){
     }
 }
 */
-
-
 
 
 function isInside(pos, rect){

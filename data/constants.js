@@ -13,7 +13,7 @@ PIPE_NO_GAP_ZONE = 150;
 //#endregion
 
 //#region GROUND
-GROUND_HEIGHT = 25;
+GROUND_HEIGHT = 50;
 //#endregion
 
 //#region GAME SETTINGS

@@ -51,14 +51,12 @@ class NeuralNetwork {
     }
 
     static deserialize(jsonObject){
-        console.log(jsonObject);
         let brain = new NeuralNetwork(jsonObject.sizes);
         let cPerceptrons = [];
         for (let i = 0; i < jsonObject.perceptrons.length; i++) {
             let layer=[];
             for (let j = 0; j < jsonObject.perceptrons[i].length; j++){
-                layer.push(Object.assign(Perceptron.prototype, jsonObject.perceptrons[i][j]));
-                //console.log(layer[j]);
+            layer.push(Object.assign(new Perceptron(), jsonObject.perceptrons[i][j]));
             }
             cPerceptrons.push(layer);
         }
