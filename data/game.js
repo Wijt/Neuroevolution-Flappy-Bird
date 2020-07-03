@@ -1,6 +1,9 @@
 let buttons = [];
+
 let birds = [];
 let deadBirds = [];
+let savedBirds = [];
+
 let pipes = [];
 let nextPipe;
 let soundEffects = [];
@@ -33,9 +36,9 @@ function setup(){
     let y = (windowHeight - height) / 2;
     cnv.position(x, y);
 
-    new Button(50, height-GROUND_HEIGHT/2, 75, 30, "PLAY", "#EAEAEA", function(){console.log("Player Play");});
-    new Button(135, height-GROUND_HEIGHT/2, 75, 30, "AI", "#EAEAEA", function(){console.log("AI Play");});
-    new Button(220, height-GROUND_HEIGHT/2, 75, 30, "TEACH", "#EAEAEA", function(){console.log("Teach Play");});
+    new Button(50, height-GROUND_HEIGHT/2, 75, 30, "PLAY", "#EAEAEA", function(){console.log("Player Play"); scene=0; saveLoadBirds(); start();});
+    new Button(135, height-GROUND_HEIGHT/2, 75, 30, "AI", "#EAEAEA", function(){console.log("AI Play"); scene=1; saveLoadBirds(); start();});
+    new Button(220, height-GROUND_HEIGHT/2, 75, 30, "TEACH", "#EAEAEA", function(){console.log("Teach Play"); scene=2; saveLoadBirds(); start();});
 
     start();
 }
@@ -52,12 +55,16 @@ function start(){
     nextPipe = pipes[0];
 
     if (scene == 0){
-        bestBird = new Bird(BIRD_X, 100, geniusBirdBrain);
-    } else if(scene == 1){
-        setPopulation();
-    } else if(scene == 2){
         player = new Bird(BIRD_X, 100, null, true); 
+    } else if(scene == 1){
+        bestBird = new Bird(BIRD_X, 100, geniusBirdBrain);
+    } else if(scene == 2){
+        setPopulation();
     }
+}
+
+function saveLoadBirds(){
+
 }
 
 function draw(){
@@ -137,7 +144,7 @@ function mouseReleased(){
         });
         return;
     }
-    if(scene==2){
+    if(scene==0){
         if (player.live){
             player.jump();
         }else{
