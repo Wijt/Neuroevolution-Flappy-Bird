@@ -5,7 +5,7 @@ class Scene{
     }
 
     start(){
-
+        console.log("Scene started");
     }
 
     update(){
@@ -23,17 +23,22 @@ class Scene{
         
     }
 
+    mousePressed(){
+
+    }
+
     exit(){
 
     }
 }
+
 class SceneManager{
     constructor(){
         this.scenes = [];
         this.activeSceneIndex = 0;
         this.getActiveScene = () => {return this.scenes[this.activeSceneIndex]};
         this.ctx = {};
-    }a
+    }
 
 
     addScene(scene){
@@ -57,6 +62,10 @@ class SceneManager{
 
     keyPressed(key){
         this.getActiveScene().keyPressed(key);
+    }
+
+    mousePressed(){
+        this.getActiveScene().mousePressed();
     }
 
     nextScene(){
