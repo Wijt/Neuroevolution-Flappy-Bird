@@ -19,7 +19,6 @@ let player;
 let scene = 2;
 
 function preload(){
-    geniusBirdJson = loadJSON("data\\birdBrain_5-10-10-1_ai.json");
     console.log(geniusBirdJson);
 }
 

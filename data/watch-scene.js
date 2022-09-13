@@ -1,7 +1,7 @@
-class PlayScene extends Scene {
+class WatchScene extends Scene {
     constructor() {
         super();
-        this.player;
+        this.superBird;
         this.pipes;
         
         this.gameStarted = false;
@@ -12,7 +12,7 @@ class PlayScene extends Scene {
     start() {
         super.start();
         
-        this.player = new Bird(BIRD_X, 100);
+        this.superBird = new AIBird(BIRD_X, 100, NeuralNetwork.deserialize(geniusBirdJson));
 
         this.pipes = [];
 
@@ -31,10 +31,8 @@ class PlayScene extends Scene {
     
         if (!this.gameStarted) return;
 
-        this.player.update();
-
         //If the player is dead, don't update the pipes
-        if (!this.player.live) return; 
+        if (!this.superBird.live) return; 
         
         this.pipes.forEach(pipe => {
             pipe.update();
@@ -42,23 +40,34 @@ class PlayScene extends Scene {
 
      
         //select next pipe
-        this.nextPipe = this.pipes.filter(pipe => pipe.pos.x > this.player.pos.x - (PIPE_WIDTH + BIRD_R))[0];
+        this.nextPipe = this.pipes.filter(pipe => pipe.pos.x > this.superBird.pos.x - (PIPE_WIDTH + BIRD_R))[0];
 
         if (this.nextPipe != null) {
+            
+            let inputs = [];
+            inputs[0] = this.nextPipe.bottomPipe.x1;
+            inputs[1] = this.superBird.pos.y;
+            inputs[2] = this.superBird.velocity;
+            inputs[3] = this.nextPipe.bottomPipe.y1;
+            inputs[4] = this.nextPipe.topPipe.y2;
+            this.superBird.inputs = inputs;
+
+            this.superBird.update();
+
             // kill the player if hit a pipe
-            let hitted = circleRect(this.player, this.nextPipe.topPipe) || circleRect(this.player, this.nextPipe.bottomPipe);
-            if (hitted) this.player.live = false;
+            let hitted = circleRect(this.superBird, this.nextPipe.topPipe) || circleRect(this.superBird, this.nextPipe.bottomPipe);
+            if (hitted) this.superBird.live = false;
 
             // give the player a point if he passed a pipe
-            if (this.player.pos.x > this.nextPipe.pos.x && this.nextPipe.hasPoint) {
-                this.player.score++;
+            if (this.superBird.pos.x > this.nextPipe.pos.x && this.nextPipe.hasPoint) {
+                this.superBird.score++;
                 this.nextPipe.hasPoint = false;
             }
         }
         
         // check if the player hit the ground
-        if (this.player.pos.y > height - GROUND_HEIGHT) {
-            this.player.live = false;
+        if (this.superBird.pos.y > height - GROUND_HEIGHT) {
+            this.superBird.live = false;
         }
     }
 
@@ -70,7 +79,7 @@ class PlayScene extends Scene {
         });
         
         //player should be drawn after the pipes so it's not hidden by them when dieing
-        this.player.show(); 
+        this.superBird.show(); 
         
         push(); //Ground drawing
             noStroke();
@@ -82,35 +91,15 @@ class PlayScene extends Scene {
             textAlign(CENTER);
             fill(255);
             textSize(60);
-            text(this.player.score, width/2, 60);
+            text(this.superBird.score, width/2, 60);
         pop();
         
-        if (!this.player.live) {
+        if (!this.superBird.live) {
             push(); //dead panel background
                 fill(0, 0, 0, 255 * 0.70);
                 rect(0, 0, width, height);
+                this.start();
             pop();
-
-            push();
-                textAlign(CENTER);
-                fill(255);
-                textSize(60);
-                text("Game Over", width/2, height/2);
-
-                textSize(30);
-                text("Click to restart", width/2, height/2 + 40);
-
-                textSize(20);
-                text("Score: " + this.player.score, width/2, height/2 + 80);
-            pop();
-        }
-    }
-
-    mouseReleased() {
-        if (this.player.live){
-            this.player.jump();
-        }else{
-            this.start();
         }
     }
 }
