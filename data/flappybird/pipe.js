@@ -19,8 +19,8 @@ class Pipe {
             x2: this.pos.x + this.width/2,
             y2: height
         };
-        
-        pipes.push(this);
+
+        sceneManager.getActiveScene().pipes.push(this);
     }
 
     show(){
@@ -45,32 +45,22 @@ class Pipe {
         pop();
     }
     
-    isCollide(bird){
-        //return isInside(bird.pos, this.topPipe) || isInside(bird.pos, this.bottomPipe);
-        return circleRect(
-            bird,
-            this.topPipe
-        ) || 
-        circleRect(
-            bird,
-            this.bottomPipe
-        );
-    }
-
     update() {
         this.pos.x -= this.velocity;
         if (this.pos.x < -this.width/2){
-            pipes.splice(this, 1);
-            new Pipe(pipes[pipes.length-1].pos.x + PIPE_BETWEEN + PIPE_WIDTH, random(150, height-150));
+            sceneManager.getActiveScene().pipes.splice(this, 1);
+            new Pipe(sceneManager.getActiveScene().pipes[sceneManager.getActiveScene().pipes.length-1].pos.x + PIPE_BETWEEN + PIPE_WIDTH, random(150, height-150));
         }
 
+        /*
+        // gives point to birds that pass the pipe
         if (this.hasPoint && this.pos.x < BIRD_X){
             bestScore++;
             this.hasPoint = false;
             birds.forEach(bird => {
                 bird.point++;
             });  
-        }
+        }*/
 
 
         this.topPipe = {

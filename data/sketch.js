@@ -42,6 +42,6 @@ function keyPressed(key){
     sceneManager.keyPressed(key);
 }
 
-function mousePressed(){
-    sceneManager.mousePressed();
+function mouseReleased(){
+    sceneManager.mouseReleased();
 }

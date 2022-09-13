@@ -23,7 +23,7 @@ class Scene{
         
     }
 
-    mousePressed(){
+    mouseReleased(){
 
     }
 
@@ -64,8 +64,8 @@ class SceneManager{
         this.getActiveScene().keyPressed(key);
     }
 
-    mousePressed(){
-        this.getActiveScene().mousePressed();
+    mouseReleased(){
+        this.getActiveScene().mouseReleased();
     }
 
     nextScene(){

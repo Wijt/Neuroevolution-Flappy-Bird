@@ -1,19 +1,11 @@
 class Bird {
-    constructor(x, y, brain, isPlayer) {
-        
-        this.isPlayer = isPlayer || false;
-        
+    constructor(x, y) {
         this.pos = {x: x, y: y};
         this.radius = BIRD_R,
 
         this.live = true;
-        this.point = 0;
+        this.score = 0;
         this.velocity = 0;
-
-        this.brain = brain || new NeuralNetwork([5,10,10,1]);
-        this.fitness = 0;
-        
-        birds.push(this);
     }
 
     show(){
@@ -24,54 +16,18 @@ class Bird {
         pop();
     }
 
-    think(){
-        let inputs = [];
-        inputs[0] = nextPipe.bottomPipe.x1;
-        inputs[1] = this.pos.y;
-        inputs[2] = this.velocity;
-        inputs[3] = nextPipe.bottomPipe.y1;
-        inputs[4] = nextPipe.topPipe.y2;
-        let result = this.brain.feedForward(inputs);
-        //console.log(result, inputs);
-        if(result[0] > 0){
-            this.jump();
-        }
-        //console.log(result);
-    }
-
     jump(){
         this.velocity = 0;
         this.velocity -= BIRD_JUMP_POWER;
     }
 
-    die(){
-        //console.warn("HIT!");
-        this.live = false;
-        birds.splice(birds.indexOf(this), 1);
-        if (!this.isPlayer){
-            deadBirds.push(this);    
-        }
-    }
-
     update() {
-        if(this.live){
-            if (!this.isPlayer){
-                this.think();
-            }
-            
-            if (this.pos.y < 0 || this.pos.y > height - GROUND_HEIGHT){
-                this.fitness-=3000;
-                this.die();
-            }
-        }
-
         if(this.pos.y < height - GROUND_HEIGHT){
             this.pos.y += this.velocity;
             this.velocity += GRAVITY;
         }else{
             this.pos.y = height - GROUND_HEIGHT;
         }
-        this.fitness += frameCount;
     }
 
 }
