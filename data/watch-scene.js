@@ -39,8 +39,10 @@ class WatchScene extends Scene {
         });
 
      
-        //select next pipe
-        this.nextPipe = this.pipes.filter(pipe => pipe.pos.x > this.superBird.pos.x - (PIPE_WIDTH + BIRD_R))[0];
+        //select next pipe for flappy bird.
+        //pipe.bottomPipe.x1 > BIRD_X - (PIPE_WIDTH + BIRD_R)
+        //this should be the selecting criterion because superBird learn with this. otherwise it is not perform that good
+        this.nextPipe = this.pipes.filter(pipe => pipe.bottomPipe.x1 > BIRD_X - (PIPE_WIDTH + BIRD_R))[0];
 
         if (this.nextPipe != null) {
             
@@ -78,6 +80,9 @@ class WatchScene extends Scene {
             pipe.show();
         });
         
+        //Shows the nextPipe different
+        //this.nextPipe.debugShow();
+
         //player should be drawn after the pipes so it's not hidden by them when dieing
         this.superBird.show(); 
         
