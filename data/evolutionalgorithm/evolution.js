@@ -5,29 +5,3 @@ function giveMutateRate(chance){
     }
     return 0;
 }
-
-function setPopulation(){
-    let fittest = getFittestBird();
-    birds = [];
-    deadBirds = [];
-    for (let i = 0; i < POPULATION_SIZE; i++) {
-        //console.log(fittest.brain, fittest.brain.copy());
-        let spawnedBird = new Bird(BIRD_X, 500, fittest.brain.copy() || null);
-        spawnedBird.brain.mutate();
-    }
-}
-
-function getFittestBird(){
-    deadBirds.sort(function(a, b){
-        return a.fitness - b.fitness;
-    });
-    return deadBirds[deadBirds.length - 1] || new Bird(BIRD_X, 500, null);
-}
-
-function saveFittest(){
-
-}
-
-function loadFittest(){
-
-}

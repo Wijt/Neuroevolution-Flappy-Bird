@@ -6,6 +6,9 @@ class AIBird extends Bird {
         this.fitness = 0;
 
         this.inputs = inputs;
+
+        //this variable created to pervent repetetive score increment
+        this.lastEarnedScoresPipe;
     } 
 
     think(){
