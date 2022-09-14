@@ -23,13 +23,14 @@ function setup(){
     geniusBirdBrain = NeuralNetwork.deserialize(geniusBirdJson);
     
     let cnv;
-    if(windowWidth<1000)
+    if(windowWidth < 1000)
         cnv = createCanvas(windowWidth, windowHeight);
     else
-        cnv = createCanvas(375, 812);
+        cnv = createCanvas(windowHeight * (9/16), windowHeight); //16:9 ratio
     let x = (windowWidth - width) / 2;
     let y = (windowHeight - height) / 2;
     cnv.position(x, y);
+    cnv.aspe
 }
 
 function draw(){
