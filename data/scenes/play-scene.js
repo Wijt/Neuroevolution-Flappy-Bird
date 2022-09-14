@@ -23,6 +23,7 @@ class PlayScene extends Scene {
         this.returnToMenuButton.mousePressed(() => {
             this.sceneManager.openScene(MENU_SCENE);
             this.returnToMenuButton.remove(); //to pervent any bug
+            this.returnToMenuButton = null;
         });
     }
 
