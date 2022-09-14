@@ -10,7 +10,6 @@ const WATCH_SCENE = 3;
 
 function preload(){
     geniusBirdJson = loadJSON("data\\birdBrain_5-10-10-1_ai.json");
-    console.log(geniusBirdJson);
 
     sceneManager = new SceneManager();
 

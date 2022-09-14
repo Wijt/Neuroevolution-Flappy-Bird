@@ -41,6 +41,7 @@ class MainMenuScene extends Scene {
     }
 
     exit() {
+        super.exit();
         this.playButton.remove();
         this.trainButton.remove();
         this.watchButton.remove();
