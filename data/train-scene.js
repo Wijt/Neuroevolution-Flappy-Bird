@@ -17,6 +17,8 @@ class TrainScene extends Scene {
     }
 
     setupUI() {
+        if (this.returnToMenuButton != null) return;
+
         this.returnToMenuButton = createButton('<');
         let bottomLeftCorner = createVector();
         this.returnToMenuButton.size(30, 30);
