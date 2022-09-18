@@ -9,21 +9,29 @@ class MainMenuScene extends Scene {
 
     start() {
         super.start();
-        this.playButton = createButton('Play');
-        this.playButton.position(innerWidth/2-this.playButton.width/2, innerHeight/2 + 50);
-        this.playButton.mousePressed(() => {
+
+        this.playButton = createButton('play');
+        this.playButton.addClass("main-menu-button");
+        this.playButton.size("15rem", "5rem");
+        // this couldn't be done with css because of the p5.js cannot detect the size of the button when positioning it
+        this.playButton.position(innerWidth/2-this.playButton.width/2, innerHeight/2);
+        this.playButton.mouseClicked(() => {
             this.sceneManager.openScene(PLAY_SCENE);
         });
 
-        this.trainButton = createButton('Train');
-        this.trainButton.position(innerWidth/2 - this.trainButton.width/2, innerHeight/2 + 100);
-        this.trainButton.mousePressed(() => {
+        this.trainButton = createButton('train');
+        this.trainButton.addClass("main-menu-button");
+        this.trainButton.size("15rem", "5rem");
+        this.trainButton.position(innerWidth/2 - this.trainButton.width/2, innerHeight/2 + this.playButton.height + 25);
+        this.trainButton.mouseClicked(() => {
             this.sceneManager.openScene(TRAIN_SCENE);
         });
 
-        this.watchButton = createButton('Watch Genius Bird');
-        this.watchButton.position(innerWidth/2- this.watchButton.width/2, innerHeight/2 + 150);
-        this.watchButton.mousePressed(() => {
+        this.watchButton = createButton('watch');
+        this.watchButton.addClass("main-menu-button");
+        this.watchButton.size("15rem", "5rem"); 
+        this.watchButton.position(innerWidth/2- this.watchButton.width/2, innerHeight/2 + (this.playButton.height + this.trainButton.height + 50));
+        this.watchButton.mouseClicked(() => {
             this.sceneManager.openScene(WATCH_SCENE);
         });
     }
@@ -33,11 +41,13 @@ class MainMenuScene extends Scene {
     }
 
     draw() {      
-        background(0);
+        background(color(PIPE_COLOR));
+        
+        stroke(8);
         fill(255);
-        textSize(32);
+        textSize(80);
         textAlign(CENTER, CENTER);
-        text("Flappy Birds", width/2, height/2);
+        text("Genius Bird", width/2, height/2 - 200);
     }
 
     exit() {

@@ -15,12 +15,13 @@ class WatchScene extends Scene {
         if (this.returnToMenuButton != null) return;
 
         this.returnToMenuButton = createButton('<');
+        this.returnToMenuButton.addClass("return-to-menu-button");
         let bottomLeftCorner = createVector();
         this.returnToMenuButton.size(30, 30);
         bottomLeftCorner.x = innerWidth/2 - width/2 + 10;
         bottomLeftCorner.y = innerHeight - (innerHeight - height)/2 - 40;
         this.returnToMenuButton.position(bottomLeftCorner.x, bottomLeftCorner.y);
-        this.returnToMenuButton.mousePressed(() => {
+        this.returnToMenuButton.mouseClicked(() => {
             this.sceneManager.openScene(MENU_SCENE);
             this.returnToMenuButton.remove(); //to pervent any bug
             this.returnToMenuButton = null;
