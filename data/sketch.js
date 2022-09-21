@@ -2,6 +2,7 @@
 let geniusBirdJson;
 
 var sceneManager;
+var assets;
 
 const MENU_SCENE = 0;
 const PLAY_SCENE = 1;
@@ -10,6 +11,11 @@ const WATCH_SCENE = 3;
 
 function preload(){
     geniusBirdJson = loadJSON("data\\birdBrain_5-10-10-1_ai.json");
+
+    assets = {};
+    assets["main_bg_bottom"] = loadImage("data\\img\\main_bg_bottom.png");
+    assets["main_bg"] = loadImage("data\\img\\main_bg.png");
+    assets["main_bird"] = loadImage("data\\img\\main_bird.png");
 
     sceneManager = new SceneManager();
 

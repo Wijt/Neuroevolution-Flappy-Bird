@@ -15,6 +15,8 @@ body {
     font-weight: bolder;
     font-size: xx-large;
 
+    cursor: pointer;
+
     transition: 0.3s ease all;
 }
 
@@ -34,14 +36,18 @@ body {
     background: white;
     border: 0.2rem solid black;
 
+    border-radius: 25%;
+
     box-shadow: 0 0.35rem 0 0 #000000;
 
     line-height: 1.5rem;
     font-size: 1.5rem;
     text-align: center;
-    padding: 0rem;
+    padding: 0px;
 
     text-shadow: 0rem 0.05rem 0.1rem #000000;
+
+    cursor: pointer;
 
     transition: 0.3s ease all;
 }
