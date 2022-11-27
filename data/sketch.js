@@ -16,6 +16,7 @@ function preload(){
     assets["main_bg_bottom"] = loadImage("data\\img\\main_bg_bottom.png");
     assets["main_bg"] = loadImage("data\\img\\main_bg.png");
     assets["main_bird"] = loadImage("data\\img\\main_bird.png");
+    assets["click_icon"] = loadImage("data\\img\\click_icon.png");
 
     sceneManager = new SceneManager();
 

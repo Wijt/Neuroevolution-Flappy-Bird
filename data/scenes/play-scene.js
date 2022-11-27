@@ -6,9 +6,14 @@ class PlayScene extends Scene {
         
         this.gameStarted = false;
 
+        this.playerTouched = false;
+        this.autoJumpTimer = 0;
+        this.autoJumpTime = 510;
+
         this.nextPipe = null;
 
         this.returnToMenuButton;
+        this.clickIcon;
     }
 
     setupUI() {
@@ -33,7 +38,7 @@ class PlayScene extends Scene {
         
         this.setupUI();
 
-        this.player = new Bird(BIRD_X, 100);
+        this.player = new Bird(BIRD_X, width/2);
 
         this.pipes = [];
 
@@ -44,6 +49,8 @@ class PlayScene extends Scene {
             new Pipe(width - PIPE_WIDTH + i * (PIPE_BETWEEN + PIPE_WIDTH), random(PIPE_NO_GAP_ZONE, height-PIPE_NO_GAP_ZONE));
         }
             
+        this.playerTouched = false;
+        this.autoJumpTimer = this.autoJumpTime;
         this.gameStarted = true;
     }
 
@@ -53,6 +60,16 @@ class PlayScene extends Scene {
         if (!this.gameStarted) return;
 
         this.player.update();
+
+        if(!this.playerTouched) {
+            if (this.autoJumpTimer < 0) {
+                this.player.jump();
+                this.autoJumpTimer = this.autoJumpTime;
+            }
+
+            this.autoJumpTimer -= deltaTime;
+            return;
+        }
 
         //If the player is dead, don't update the pipes
         if (!this.player.live) return; 
@@ -85,6 +102,26 @@ class PlayScene extends Scene {
 
     draw() {      
         background(color(BG_COLOR));
+
+        if (!this.playerTouched) {
+            // draw the background
+            push(); 
+                fill(0, 0, 0, 255 * 1);
+                rect(0, 0, width, height);
+            pop();
+
+            // draw the background image with the correct scaling
+            var hRatio = width  / assets["click_icon"].width;
+            var vRatio =  height / assets["click_icon"].height;
+            var ratio  = min(hRatio, vRatio);
+            var scaleAnimation = 1 + abs(sin(frameCount * 0.05)) * 0.1;
+            var scale = 0.25;
+            var imgWidth = assets["click_icon"].width * ratio * scale * scaleAnimation;
+            var imgHeight = assets["click_icon"].height * ratio * scale * scaleAnimation;
+            var centerShift_x = (width - imgWidth) / 2;
+            var centerShift_y = (height - imgHeight) / 2;  
+            image(assets["click_icon"], centerShift_x, centerShift_y, imgWidth, imgHeight);  
+        }
 
         this.pipes.forEach(pipe => {
             pipe.show();
@@ -128,6 +165,8 @@ class PlayScene extends Scene {
     }
 
     mouseReleased() {
+        this.playerTouched = true;
+
         if (this.player.live){
             this.player.jump();
         }else{
