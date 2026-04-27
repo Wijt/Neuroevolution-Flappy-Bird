@@ -4,7 +4,7 @@ FROM nginx:alpine
 WORKDIR /usr/share/nginx/html
 
 # Remove the default nginx placeholder files to avoid serving the wrong index.
-RUN rm -rf ./*
+RUN rm -rf /usr/share/nginx/html/*
 
 # Copy only the assets the game needs (keeps image lean and avoids path issues).
 COPY index.html ./
