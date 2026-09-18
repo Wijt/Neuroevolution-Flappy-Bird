@@ -59,73 +59,95 @@ body {
 .return-to-menu-button:active {
     border-color: red;
 }
+/* Watch-Jev instrumentation panel. Palette matches the game (data/constants.js). */
+body.jev-watch-open {
+    overflow: auto;
+}
 .jev-panel {
+    box-sizing: border-box;
+    background: #162447;
+    color: #eef2ff;
+    font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    z-index: 20;
+    overflow-y: auto;
+    border-left: 2px solid #1f4068;
+    padding: 16px 16px 32px;
+}
+.jev-panel * { box-sizing: border-box; }
+.jev-panel h2 {
+    font-size: 12px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: #8fa3d6;
+    margin: 20px 0 8px;
+    border-top: 1px solid #1f4068;
+    padding-top: 14px;
+}
+.jev-panel section:first-of-type h2 { border-top: none; padding-top: 0; margin-top: 0; }
+.jev-panel label { display: block; font-size: 11px; color: #b9c4e6; margin: 8px 0 4px; }
+.jev-panel input[type="password"],
+.jev-panel input[type="number"] {
+    width: 100%;
+    padding: 8px;
+    border-radius: 4px;
+    border: 1px solid #1f4068;
+    background: #0f1b38;
+    color: #eef2ff;
+    font: inherit;
+}
+.jev-panel input[type="checkbox"] { accent-color: #e43f5a; margin-right: 6px; }
+.jev-panel button {
+    cursor: pointer;
+    padding: 7px 12px;
+    margin: 8px 6px 0 0;
+    border-radius: 4px;
+    border: 1px solid #1f4068;
+    background: #1f4068;
+    color: #eef2ff;
+    font: inherit;
+}
+.jev-panel button:hover { background: #28517f; }
+.jev-panel button:disabled { opacity: .5; cursor: default; }
+.jev-panel .jev-status { min-height: 18px; font-size: 12px; color: #ffd479; margin-top: 8px; }
+.jev-panel .jev-plan-name { font-size: 22px; font-weight: 700; color: #ffffff; margin: 4px 0; }
+.jev-panel .jev-late-badge { display: inline-block; background: #e43f5a; color: #fff; font-size: 10px; font-weight: 700; letter-spacing: .05em; padding: 2px 6px; border-radius: 3px; margin-left: 8px; vertical-align: middle; }
+.jev-panel .jev-bar-row { display: flex; align-items: center; gap: 8px; font-size: 11px; margin: 4px 0; }
+.jev-panel .jev-bar-label { width: 84px; flex: 0 0 auto; color: #b9c4e6; }
+.jev-panel .jev-bar-track { flex: 1 1 auto; height: 8px; background: #0f1b38; border-radius: 4px; overflow: hidden; }
+.jev-panel .jev-bar-fill { display: block; height: 100%; background: #e43f5a; width: 0%; }
+.jev-panel .jev-bar-fill.chosen { background: #58ef91; }
+.jev-panel .jev-bar-pct { width: 40px; flex: 0 0 auto; text-align: right; color: #eef2ff; }
+.jev-panel .jev-meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; font-size: 11px; color: #b9c4e6; }
+.jev-panel .jev-meta-grid b { display: block; color: #eef2ff; font-size: 13px; font-weight: 600; }
+.jev-panel details { margin-top: 8px; border: 1px solid #1f4068; border-radius: 4px; }
+.jev-panel summary { cursor: pointer; padding: 8px; font-size: 11px; color: #b9c4e6; }
+.jev-panel pre {
+    margin: 0; padding: 8px; max-height: 220px; overflow: auto;
+    font: 10px/1.5 Consolas, "Courier New", monospace;
+    color: #9fd3ff; white-space: pre-wrap; word-break: break-word;
+    border-top: 1px solid #1f4068;
+}
+.jev-panel .jev-history { list-style: none; margin: 0; padding: 0; max-height: 160px; overflow-y: auto; font: 11px/1.7 Consolas, "Courier New", monospace; color: #b9c4e6; }
+.jev-panel .jev-history li { border-bottom: 1px solid #1f4068; padding: 2px 0; }
+.jev-panel .jev-error { color: #ff8a8a; font-size: 12px; margin-top: 8px; }
+
+/* Wide layout: panel fixed to the right, canvas shifted left to make room. */
+body.jev-watch-wide { overflow: hidden; }
+body.jev-watch-wide .jev-panel {
     position: fixed;
-    bottom: 12px;
+    top: 0;
+    right: 0;
+    width: 360px;
+    height: 100vh;
+}
+
+/* Narrow layout: panel stacks below the canvas, page scrolls. */
+body.jev-watch-narrow .jev-panel {
+    position: absolute;
+    width: min(480px, calc(100vw - 24px));
     left: 50%;
     transform: translateX(-50%);
-    width: min(440px, calc(100vw - 32px));
-    padding: 12px;
-    box-sizing: border-box;
+    max-height: 70vh;
     border-radius: 8px;
-    background: rgba(22, 36, 71, 0.96);
-    color: white;
-    font: 14px/1.5 sans-serif;
-    z-index: 10;
+    border: 1px solid #1f4068;
 }
-.jev-panel input { width: 100%; box-sizing: border-box; padding: 8px; margin: 8px 0; }
-.jev-panel button { cursor: pointer; padding: 7px 10px; margin-right: 5px; }
-
-/* Watch-only instrumentation. The original play/train views retain their layout. */
-body.watch-console-open { overflow: auto; background: #030806; color: #c3e0ce; }
-.jev-console { max-width: 1440px; margin: 0 auto; padding: 24px 28px 40px; font: 12px/1.6 Consolas, 'Courier New', monospace; --green: #58ef91; --muted: #789e87; --border: #214732; }
-.jev-console * { box-sizing: border-box; }
-.console-header { display: flex; align-items: center; justify-content: space-between; padding-bottom: 20px; border-bottom: 1px solid var(--border); font-size: 21px; letter-spacing: .12em; color: #e0f2e6; }
-.signal-dot { display: inline-block; width: 9px; height: 9px; background: var(--green); border-radius: 50%; margin-right: 8px; }
-.console-tag, .muted { color: var(--muted); font-size: 11px; letter-spacing: .08em; }
-.console-grid { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(280px, 1fr); gap: 24px; margin-top: 18px; }
-.section-heading { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 10px; letter-spacing: .09em; margin: 0 0 12px; }
-.section-heading > span:last-child { text-align: right; }
-.flight-screen { border: 1px solid #58a774; border-radius: 5px; overflow: hidden; background: #050d0a; }
-.flight-readout { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding: 12px 0; color: var(--muted); font-size: 10px; }
-.flight-readout b { color: #e8c66b; margin-left: 6px; font-weight: normal; }
-.judgment-column { padding: 0 0 0 22px; border-left: 1px solid var(--border); }
-.judgment-column h1 { font-family: 'Bahnschrift', 'Arial Narrow', sans-serif; font-size: clamp(26px, 3vw, 40px); font-weight: 500; line-height: 1.07; margin: 20px 0 14px; letter-spacing: -.03em; color: #d3f1dd; }
-.question-caption { color: #9abaA5; max-width: 310px; margin-bottom: 22px; }
-.decision-banner { display: flex; justify-content: space-between; gap: 10px; border-top: 1px solid var(--border); padding: 13px 0; font-size: 10px; }
-.decision-banner strong { color: var(--green); font-size: 12px; }
-.probability { margin: 0 0 14px; }
-.probability > div:first-child { display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 5px; }
-.probability b { font-weight: normal; color: var(--green); }
-.bar-track { height: 7px; background: #102e1b; }
-.bar-track i { display: block; width: 0; height: 100%; background: var(--green); transition: width .15s; }
-.judgment-meta { display: flex; justify-content: space-between; gap: 8px; font-size: 10px; color: var(--muted); }
-.judgment-meta b { display: block; color: #d3f1dd; font-size: 15px; font-weight: normal; }
-.model-note { color: var(--muted); font-size: 10px; line-height: 1.6; }
-.small-heading { margin: 20px 0 6px; border-top: 1px solid var(--border); padding-top: 10px; }
-.forecast-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 10px; }
-.forecast-row b { color: #e8c66b; font-weight: normal; }
-.budget-meter { border-top: 1px solid var(--border); margin-top: 14px; padding: 12px 0; display: flex; justify-content: space-between; color: var(--muted); }
-.budget-meter b { color: var(--green); }
-.jev-console .jev-panel { position: static; width: auto; transform: none; padding: 12px 0 0; border-top: 1px solid var(--border); border-radius: 0; background: none; color: #a4c7b1; font: inherit; }
-.jev-console .jev-panel > div:first-child { min-height: 38px; color: #d6eade; }
-.jev-console .jev-panel input[type=password] { background: #081810; border: 1px solid #31513d; color: #c3e0ce; font: inherit; border-radius: 3px; width: 100%; padding: 9px; }
-.jev-console .jev-panel button { border: 1px solid #477354; background: #0c2416; color: #b8e3c8; font: inherit; padding: 7px 14px; margin: 6px 6px 6px 0; border-radius: 3px; cursor: pointer; }
-.jev-console .jev-panel button:hover { background: #194129; color: #fff; }
-.jev-console .jev-panel input[type=checkbox] { width: auto; margin-right: 7px; accent-color: #58ef91; }
-.jev-console :focus-visible { outline: 2px solid #e8c66b; outline-offset: 3px; }
-.trace-section, .inspector-section { border-top: 1px solid var(--border); margin-top: 24px; padding-top: 16px; }
-.flow-diagram { display: flex; align-items: center; gap: 10px; padding: 12px 0; }
-.flow-diagram > div { flex: 1; min-height: 60px; text-align: center; border: 1px solid #31513d; padding: 10px 5px; font-size: 10px; color: #91ad9a; border-radius: 4px; }
-.flow-diagram small { display: block; font-size: 9px; color: var(--muted); margin-top: 4px; }
-.flow-diagram > span { color: #4a7958; }
-.flow-diagram .active { border-color: var(--green); color: var(--green); background: #0c2416; }
-.flow-diagram .intervention { border-color: #e8c66b; color: #e8c66b; background: #29210d; }
-.flow-caption { color: #b6d7c1; font-size: 11px; min-height: 18px; }
-.inspector-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
-.inspector-grid details { min-width: 0; border: 1px solid var(--border); background: #06100b; }
-.inspector-grid summary { cursor: pointer; padding: 12px; color: #b5dbc2; font-size: 10px; }
-.endpoint { padding: 8px 12px; border-top: 1px solid var(--border); color: #e8c66b; font-size: 10px; overflow-wrap: anywhere; }
-.inspector-grid pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 310px; overflow: auto; padding: 12px; margin: 0; color: #97c9a9; font: 11px/1.65 Consolas, monospace; }
-@media(max-width: 760px) { .jev-console { padding: 14px; } .console-header { font-size: 17px; } .console-tag { display: none; } .console-grid { grid-template-columns: 1fr; } .judgment-column { padding: 18px 0 0; border-left: 0; border-top: 1px solid var(--border); } .judgment-column h1 br { display: none; } .inspector-grid { grid-template-columns: 1fr; } .flow-diagram { flex-direction: column; align-items: stretch; } .flow-diagram > span { text-align: center; transform: rotate(90deg); } }
-@media(prefers-reduced-motion: reduce) { .bar-track i { transition: none; } }

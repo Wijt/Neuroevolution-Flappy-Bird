@@ -1,45 +1,162 @@
-// Shared exact short-horizon physics. Predictions are evidence, not model decisions.
+// Pure, deterministic short-horizon physics shared by the server and the browser scene.
+// No p5 globals: everything needed comes from the GameState argument.
 (function (root) {
-    function predict(state, action, ticks = 30) {
-        let y = state.bird.y;
-        let velocity = action === 'flap' ? -state.physics.jumpPower : state.bird.velocity;
-        const radius = state.bird.collisionRadius;
-        let firstCollisionTick = null;
-        let minY = y;
-        let maxY = y;
-        let yAtDecision = y;
-        for (let tick = 1; tick <= ticks; tick++) {
-            y += velocity;
-            velocity += state.physics.gravity;
-            minY = Math.min(minY, y);
-            maxY = Math.max(maxY, y);
-            let collision = y - radius <= 0 || y + radius >= state.world.groundY;
-            for (const pipe of state.pipes) {
-                const left = pipe.left - tick * state.physics.pipeSpeed;
-                const right = pipe.right - tick * state.physics.pipeSpeed;
-                const dx = Math.max(left - state.bird.x, 0, state.bird.x - right);
-                const topDistance = Math.max(y - pipe.gapTop, 0);
-                const bottomDistance = Math.max(pipe.gapBottom - y, 0);
-                if (dx * dx + Math.min(topDistance * topDistance, bottomDistance * bottomDistance) <= radius * radius) collision = true;
-            }
-            if (collision && firstCollisionTick === null) firstCollisionTick = tick;
-            if (tick === state.decisionFrames) yAtDecision = y;
-        }
-        return { yAtDecision, yAfter30Ticks: y, minY, maxY, firstCollisionTick,
-            safeUntilNextDecision: firstCollisionTick === null || firstCollisionTick > state.decisionFrames };
+    const HORIZON = 12;
+    const LOOKAHEAD = 36;
+    const PLANS = ['flap_now', 'flap_at_4', 'flap_at_8', 'no_flap'];
+    const FLAP_TICK = { flap_now: 0, flap_at_4: 4, flap_at_8: 8, no_flap: null };
+
+    function clamp(v, min, max) { return Math.min(Math.max(v, min), max); }
+
+    // Closest-point circle-rect distance, mirrors data/utils.js circleRect's edge testing.
+    function closestPointDist(cx, cy, rect) {
+        const testX = clamp(cx, rect.x1, rect.x2);
+        const testY = clamp(cy, rect.y1, rect.y2);
+        const dx = cx - testX;
+        const dy = cy - testY;
+        return Math.sqrt(dx * dx + dy * dy);
     }
-    function evidence(state) {
-        const pipe = state.pipes[0];
+
+    // Mirrors Bird.jump() (velocity = -jumpPower) followed by Bird.update():
+    //   if (pos.y < groundY) { pos.y += velocity; velocity += gravity } else { pos.y = groundY }
+    function stepBird(bird, flap, physics, groundY) {
+        let { y, velocity } = bird;
+        if (flap) velocity = -physics.jumpPower;
+        if (y < groundY) {
+            y += velocity;
+            velocity += physics.gravity;
+        } else {
+            y = groundY;
+        }
+        return { y, velocity };
+    }
+
+    // Runs `ticks` ticks of the given flapTicks (0-indexed tick numbers at which a flap fires
+    // at the START of that tick, before its position update). Returns per-tick points,
+    // per-tick clearance (distance to nearest pipe/ground edge minus radius, negative if hit),
+    // the first collision (if any) and whether the bird passed pipes[0] without colliding.
+    function runSimulation(state, flapTicks, ticks) {
+        const physics = state.physics;
+        const groundY = state.world.groundY;
+        const radius = state.bird.radius;
+        const birdX = state.bird.x;
+        let y = state.bird.y;
+        let velocity = state.bird.velocity;
+        let pipes = state.pipes.map(p => ({ left: p.left, right: p.right, gapTop: p.gapTop, gapBottom: p.gapBottom }));
+        const points = [];
+        const clearances = [];
+        let collision = null;
+        for (let t = 0; t < ticks; t++) {
+            const flap = flapTicks.includes(t);
+            ({ y, velocity } = stepBird({ y, velocity }, flap, physics, groundY));
+            pipes = pipes.map(p => ({
+                left: p.left - physics.pipeSpeed, right: p.right - physics.pipeSpeed,
+                gapTop: p.gapTop, gapBottom: p.gapBottom
+            }));
+            let minDist = Infinity;
+            let hitType = null;
+            for (const p of pipes) {
+                const topDist = closestPointDist(birdX, y, { x1: p.left, y1: 0, x2: p.right, y2: p.gapTop });
+                const bottomDist = closestPointDist(birdX, y, { x1: p.left, y1: p.gapBottom, x2: p.right, y2: groundY });
+                if (hitType === null && topDist <= radius) hitType = 'top pipe';
+                if (hitType === null && bottomDist <= radius) hitType = 'bottom pipe';
+                minDist = Math.min(minDist, topDist, bottomDist);
+            }
+            const groundDist = groundY - y;
+            if (hitType === null && groundDist <= radius) hitType = 'ground';
+            minDist = Math.min(minDist, groundDist);
+            clearances.push(minDist - radius);
+            if (collision === null && hitType) collision = { tick: t, with: hitType };
+            points.push({ tick: t, y, velocity });
+        }
+        const finalPipe = pipes[0] || null;
+        const passedGap = collision === null && finalPipe ? birdX > finalPipe.right : false;
+        return { points, collision, clearances, passedGap };
+    }
+
+    function simulate(state, flapTicks, ticks) {
+        const { points, collision, passedGap } = runSimulation(state, flapTicks, ticks);
+        return { points, collision, passedGap };
+    }
+
+    // Exact game state HORIZON ticks later: bird stepped with `plan`'s single flap (if any),
+    // pipes shifted by pipeSpeed*HORIZON, pipes that have fully scrolled past the bird dropped.
+    // Pure; does not mutate `state`.
+    function advance(state, plan) {
+        const flapTick = FLAP_TICK[plan];
+        const flapTicks = flapTick === null ? [] : [flapTick];
+        const physics = state.physics;
+        const groundY = state.world.groundY;
+        let y = state.bird.y;
+        let velocity = state.bird.velocity;
+        for (let t = 0; t < HORIZON; t++) {
+            const flap = flapTicks.includes(t);
+            ({ y, velocity } = stepBird({ y, velocity }, flap, physics, groundY));
+        }
+        const shift = physics.pipeSpeed * HORIZON;
+        const bird = { x: state.bird.x, y, velocity, radius: state.bird.radius };
+        const pipes = state.pipes
+            .map(p => ({ left: p.left - shift, right: p.right - shift, gapTop: p.gapTop, gapBottom: p.gapBottom }))
+            .filter(p => p.right >= bird.x - bird.radius)
+            .sort((a, b) => a.left - b.left);
         return {
-            motion: state.bird.velocity < 0 ? 'rising' : 'falling or stationary',
-            targetY: (pipe.gapTop + pipe.gapBottom) / 2,
-            birdRelativeToGapCenter: state.bird.y < (pipe.gapTop + pipe.gapBottom) / 2 ? 'above' : 'below',
-            ticksUntilPipe: Math.max(0, (pipe.left - state.bird.x - state.bird.collisionRadius) / state.physics.pipeSpeed),
-            flap: predict(state, 'flap'), coast: predict(state, 'coast'),
-            forecastAssumption: '30-tick forecasts assume NO later flaps. A new decision is allowed after 6 ticks; later collisions are not inevitable.'
+            bird,
+            world: { width: state.world.width, groundY: state.world.groundY },
+            physics: { gravity: physics.gravity, jumpPower: physics.jumpPower, pipeSpeed: physics.pipeSpeed },
+            pipes
         };
     }
-    const api = { predict, evidence };
+
+    function forecastPlans(state) {
+        const totalTicks = HORIZON + LOOKAHEAD;
+        const nextPipe = state.pipes[0] || null;
+        const gapCenter = nextPipe ? (nextPipe.gapTop + nextPipe.gapBottom) / 2 : null;
+        const result = {};
+        for (const plan of PLANS) {
+            const flapTick = FLAP_TICK[plan];
+            const flapTicks = flapTick === null ? [] : [flapTick];
+            const sim = runSimulation(state, flapTicks, totalTicks);
+            const windowPoint = sim.points[HORIZON - 1];
+            const endY = windowPoint.y;
+            const endVelocity = windowPoint.velocity;
+            const minClearance = Math.min(...sim.clearances.slice(0, HORIZON));
+            let collisionWithinWindow = null;
+            let collisionIfCoastingAfter = null;
+            if (sim.collision) {
+                if (sim.collision.tick < HORIZON) collisionWithinWindow = sim.collision;
+                else collisionIfCoastingAfter = sim.collision;
+            }
+            const passesGapIfCoastingAfter = collisionWithinWindow ? false : sim.passedGap;
+            result[plan] = {
+                flapAtTick: flapTick,
+                endY, endVelocity,
+                offsetFromGapCenterAtEnd: gapCenter === null ? null : endY - gapCenter,
+                minClearance,
+                collisionWithinWindow,
+                collisionIfCoastingAfter,
+                passesGapIfCoastingAfter,
+                trajectory: sim.points.map(p => ({ tick: p.tick, y: p.y }))
+            };
+        }
+        return result;
+    }
+
+    function bestPlan(forecasts) {
+        const safe = PLANS.filter(p => !forecasts[p].collisionWithinWindow);
+        if (safe.length === 0) {
+            return PLANS.reduce((best, p) =>
+                forecasts[p].collisionWithinWindow.tick > forecasts[best].collisionWithinWindow.tick ? p : best);
+        }
+        safe.sort((a, b) => {
+            const aSafe = forecasts[a].collisionIfCoastingAfter === null ? 0 : 1;
+            const bSafe = forecasts[b].collisionIfCoastingAfter === null ? 0 : 1;
+            if (aSafe !== bSafe) return aSafe - bSafe;
+            return Math.abs(forecasts[a].offsetFromGapCenterAtEnd) - Math.abs(forecasts[b].offsetFromGapCenterAtEnd);
+        });
+        return safe[0];
+    }
+
+    const api = { HORIZON, LOOKAHEAD, PLANS, FLAP_TICK, simulate, forecastPlans, advance, bestPlan };
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
     else root.JevPhysics = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

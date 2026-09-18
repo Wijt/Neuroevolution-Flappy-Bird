@@ -2,162 +2,268 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const fs = require('node:fs');
+
+function makeDocument() {
+    return {
+        hidden: false,
+        addEventListener() {},
+        removeEventListener() {},
+        body: { appendChild() {}, removeChild() {}, classList: { add() {}, remove() {} } },
+        createElement() {
+            return {
+                style: {},
+                classList: { add() {}, remove() {}, toggle() {} },
+                addEventListener() {},
+                appendChild() {},
+                removeChild() {},
+                setAttribute() {},
+                querySelector() { return null; },
+                remove() {}
+            };
+        },
+        querySelector() { return null; }
+    };
+}
+
 function sceneHarness(fetchImpl) {
     let now = 0;
-    const context = vm.createContext({ console, AbortController, setTimeout, clearTimeout,
-        performance: { now: () => now }, fetch: fetchImpl,
-        width: 450, height: 800, BIRD_X: 100, BIRD_R: 25, BIRD_JUMP_POWER: 6,
+    const context = vm.createContext({
+        console, AbortController, setTimeout, clearTimeout,
+        performance: { now: () => now },
+        fetch: fetchImpl || (async () => { throw new Error('no fetch configured'); }),
+        document: makeDocument(),
+        window: { innerWidth: 1400, addEventListener() {}, removeEventListener() {} },
+        width: 450, height: 800,
+        BIRD_X: 100, BIRD_R: 25, BIRD_JUMP_POWER: 6,
         GRAVITY: 0.4, GROUND_HEIGHT: 50, PIPE_WIDTH: 50, PIPE_BETWEEN: 200,
         PIPE_GAP_H: 125, PIPE_SCROOL: 2, PIPE_NO_GAP_ZONE: 150,
-        random: (a, b) => (a + b) / 2, circleRect: () => false,
+        BG_COLOR: '#1b1b2f', GROUND_COLOR: '#162447',
+        random: (a, b) => (a + b) / 2,
+        circleRect: () => false,
+        // p5 drawing no-ops used by draw(); not exercised by these tests but referenced.
+        background() {}, push() {}, pop() {}, fill() {}, noFill() {}, stroke() {}, noStroke() {},
+        strokeWeight() {}, rect() {}, ellipse() {}, line() {}, text() {}, textAlign() {}, textSize() {},
+        beginShape() {}, endShape() {}, vertex() {}, color: (...a) => a,
+        CENTER: 'center',
         Scene: class { update() {} start() {} exit() {} }
     });
-    for (const file of ['data/flappybird/bird.js', 'data/flappybird/pipe.js', 'data/jev-physics.js', 'data/scenes/watch-scene.js']) {
-        vm.runInContext(fs.readFileSync(file, 'utf8'), context);
+    for (const file of [
+        'data/flappybird/bird.js',
+        'data/flappybird/pipe.js',
+        'data/jev-physics.js',
+        'data/jev-contract.js',
+        'data/scenes/watch-scene.js'
+    ]) {
+        vm.runInContext(fs.readFileSync(file, 'utf8'), context, { filename: file });
     }
     const scene = vm.runInContext('new WatchScene()', context);
     context.sceneManager = { getActiveScene: () => scene };
-    scene.pauseButton = { html() {} };
-    scene.retryButton = { hide() {}, show() {} };
-    scene.statusLabel = { elt: {} };
-    let key = 'browser-key';
-    scene.keyInput = { value(v) { if (v !== undefined) key = v; return key; } };
     scene.resetGame();
-    return { scene, tick: () => { now += 17; scene.update(); } };
+    return {
+        scene,
+        context,
+        setNow: v => { now = v; },
+        tick: () => { now += 1000 / 60; scene.update(); }
+    };
 }
-const result = action => ({ action, confidence: 0.9, decisionFrames: 6, latencyMs: 20 });
-test('physics freezes while waiting; Jev flap is applied only after resume', async () => {
-    let resolve;
-    let calls = 0;
-    const { scene, tick } = sceneHarness(() => { calls++; return new Promise(r => resolve = r); });
-    scene.paused = false;
-    tick();
-    const y = scene.superBird.pos.y;
-    const x = scene.pipes[0].pos.x;
-    for (let i = 0; i < 100; i++) tick();
-    assert.equal(calls, 1);
-    assert.equal(scene.superBird.pos.y, y);
-    assert.equal(scene.pipes[0].pos.x, x);
-    scene.paused = true;
-    resolve(Response.json(result('flap')));
-    await new Promise(r => setImmediate(r));
-    tick();
-    assert.equal(scene.superBird.velocity, 0);
-    scene.paused = false;
-    tick();
-    assert.ok(scene.superBird.velocity < 0);
-    assert.ok(scene.superBird.pos.y < y);
-});
-test('old response cannot change a restarted game or an exited scene', async () => {
-    let resolve;
-    const { scene } = sceneHarness(() => new Promise(r => resolve = r));
-    scene.paused = false;
-    let pending = scene.requestDecision();
-    scene.resetGame();
-    resolve(Response.json(result('flap')));
-    await pending;
-    assert.equal(scene.readyDecision, null);
-    assert.equal(scene.superBird.velocity, 0);
-    scene.paused = false;
-    scene.lastCallAt = -Infinity;
-    pending = scene.requestDecision();
-    scene.exit();
-    resolve(Response.json(result('flap')));
-    await pending;
-    assert.equal(scene.readyDecision, null);
-    assert.equal(scene.keyInput.value(), '');
-});
-test('service failure pauses without falling back; coast does not flap', async () => {
-    const { scene, tick } = sceneHarness(async () => Response.json({ error: 'bad key' }, { status: 401 }));
-    scene.paused = false;
-    await scene.requestDecision();
-    scene.paused = false;
-    for (let i = 0; i < 20; i++) tick();
-    assert.equal(scene.superBird.pos.y, 100);
-    assert.equal(scene.error, 'bad key');
-    scene.error = null;
-    scene.readyDecision = result('coast');
-    tick();
-    assert.equal(scene.superBird.velocity, 0.4);
-});
-test('pipe recycling retains count and creates valid gaps; ground equality kills bird', () => {
-    const { scene } = sceneHarness();
-    const count = scene.pipes.length;
-    scene.pipes[0].pos.x = -25;
-    scene.step();
-    assert.equal(scene.pipes.length, count);
-    assert.ok(scene.pipes.at(-1).bottomPipe.y1 <= 750);
-    scene.superBird.pos.y = 750;
-    scene.step();
-    assert.equal(scene.superBird.live, false);
+
+const HORIZON = 12;
+
+function answer(plan, overrides) {
+    return Object.assign({
+        id: 0,
+        plan,
+        probabilities: { flap_now: 0.1, flap_at_4: 0.1, flap_at_8: 0.1, no_flap: 0.7, [plan]: 0.7 },
+        confidence: 0.9,
+        model: 'jev-latest',
+        usage: { input_tokens: 500, output_tokens: 20 },
+        latencyMs: 42
+    }, overrides || {});
+}
+function jsonResponse(status, body) {
+    return { status, ok: status >= 200 && status < 300, json: async () => body };
+}
+
+test('game keeps stepping while a request is pending', () => {
+    const { scene, tick } = sceneHarness(() => new Promise(() => {})); // never resolves
+    scene.state = 'running';
+    const y0 = scene.bird.pos.y;
+    const pipeX0 = scene.pipes[0].pos.x;
+    for (let i = 0; i < 30; i++) tick();
+    assert.notEqual(scene.bird.pos.y, y0);
+    assert.notEqual(scene.pipes[0].pos.x, pipeX0);
 });
 
-test('dead, paused, exited and pending scenes never send additional requests', async () => {
-    let calls = 0;
-    const { scene, tick } = sceneHarness(async () => { calls++; return Response.json(result('coast')); });
-    await scene.requestDecision();
-    assert.equal(calls, 0);
-    scene.paused = false;
-    scene.superBird.live = false;
-    for (let i = 0; i < 1000; i++) tick();
-    await scene.requestDecision();
-    assert.equal(calls, 0);
-    scene.resetGame();
-    scene.paused = false;
-    scene.pending = true;
-    await scene.requestDecision();
-    assert.equal(calls, 0);
-    scene.exit();
-    await scene.requestDecision();
-    assert.equal(calls, 0);
-});
-test('rising bird coasts without repeated paid decisions', () => {
-    let calls = 0;
-    const { scene, tick } = sceneHarness(() => { calls++; });
-    scene.paused = false;
-    scene.superBird.pos.y = 350;
-    scene.superBird.jump();
-    for (let i = 0; i < 15; i++) tick();
-    assert.equal(calls, 0);
-    assert.ok(scene.superBird.velocity > -6);
-});
-test('budget survives restart and prevents both API calls and automatic restart', async () => {
-    let calls = 0;
-    const { scene, tick } = sceneHarness(() => { calls++; });
-    scene.calls = scene.callLimit;
-    scene.resetGame();
-    scene.paused = false;
-    await scene.requestDecision();
-    assert.equal(calls, 0);
-    assert.equal(scene.paused, true);
-    scene.autoRestart = { checked: () => true };
-    scene.superBird.live = false;
-    scene.deathAt = 0;
-    for (let i = 0; i < 200; i++) tick();
-    assert.equal(scene.superBird.live, false);
-    assert.equal(calls, 0);
-});
-test('opt-in auto restart waits two seconds without calls during death', () => {
-    let calls = 0;
-    const { scene, tick } = sceneHarness(() => { calls++; });
-    scene.autoRestart = { checked: () => true };
-    scene.superBird.live = false;
-    scene.deathAt = 0;
-    scene.calls = 4;
-    for (let i = 0; i < 117; i++) tick();
-    assert.equal(scene.superBird.live, false);
-    assert.equal(calls, 0);
+test('late answer falls back to the physics heuristic and is labelled late', () => {
+    const { scene, tick, context } = sceneHarness(() => new Promise(() => {}));
+    scene.state = 'running';
+    // No answer for window 0 was requested: the window must commit immediately with the
+    // physics fallback, labelled late, never mistaken for a Jev decision.
     tick();
-    assert.equal(scene.superBird.live, true);
-    assert.equal(scene.calls, 4);
-    assert.equal(calls, 0);
+    const expected = context.JevPhysics.bestPlan(scene.currentForecasts);
+    assert.equal(scene.currentPlan, expected);
+    assert.equal(scene.lateCount, 1);
+    assert.equal(scene.history[0].late, true);
+    assert.equal(scene.history[0].probabilities, null);
 });
-test('imminent ceiling collision overrides unsafe flap and labels intervention', () => {
-    const { scene, tick } = sceneHarness();
-    scene.paused = false;
-    scene.superBird.pos.y = 40;
-    scene.readyDecision = result('flap');
+
+test('start primes window 0 and waits for it briefly, then applies it without a late mark', async () => {
+    let resolve;
+    const { scene, tick, context } = sceneHarness(() => new Promise(r => { resolve = r; }));
+    scene.handleStartClick();
+    assert.equal(scene.state, 'running');
+    assert.equal(scene.requestsSent, 1);
+    const y = scene.bird.pos.y;
+    for (let i = 0; i < 10; i++) tick();           // ~170 ms: still inside the warm-up hold
+    assert.equal(scene.bird.pos.y, y);
+    resolve(jsonResponse(200, answer('flap_at_4', { id: 0 })));
+    await new Promise(r => setImmediate(r));
+    await new Promise(r => setImmediate(r));
     tick();
-    assert.ok(scene.superBird.velocity >= 0);
-    assert.match(scene.statusLabel.elt.textContent, /safety: coast/);
+    assert.equal(scene.currentPlan, 'flap_at_4');
+    assert.equal(scene.lateCount, 0);
+    assert.equal(scene.requestsSent, 2);            // window 1 was pipelined at commit
+});
+
+test('warm-up hold is bounded; the game starts anyway with a late fallback', () => {
+    const { scene, tick, context } = sceneHarness(() => new Promise(() => {}));
+    scene.handleStartClick();
+    for (let i = 0; i < 60; i++) tick();            // > WARMUP_MS
+    assert.ok(scene.history.length >= 1);
+    assert.equal(scene.history[0].late, true);
+});
+
+test('pausing keeps the in-flight answer and reuses it on resume; nothing new is sent while paused', async () => {
+    let resolve;
+    let calls = 0;
+    const { scene, tick } = sceneHarness(() => { calls++; return new Promise(r => { resolve = r; }); });
+    scene.handleStartClick();                        // request 0 in flight
+    scene.handleStartClick();                        // pause
+    assert.equal(scene.state, 'paused');
+    const sent = calls;
+    for (let i = 0; i < 30; i++) tick();
+    assert.equal(calls, sent);
+    resolve(jsonResponse(200, answer('flap_now', { id: 0 })));
+    await new Promise(r => setImmediate(r));
+    await new Promise(r => setImmediate(r));
+    assert.equal(scene.pendingResponses[0].status, 'resolved');
+    scene.handleStartClick();                        // resume
+    tick();
+    assert.equal(scene.currentPlan, 'flap_now');
+    assert.equal(scene.lateCount, 0);
+});
+
+test('a resolved answer for the current window is applied, not late', () => {
+    const { scene, tick } = sceneHarness(() => new Promise(() => {}));
+    scene.state = 'running';
+    scene.pendingResponses[0] = {
+        status: 'resolved', plan: 'flap_at_4', probabilities: { flap_now: 0, flap_at_4: 0.8, flap_at_8: 0.1, no_flap: 0.1 },
+        confidence: 0.8, latencyMs: 55, usage: { input_tokens: 400, output_tokens: 10 }
+    };
+    tick();
+    assert.equal(scene.currentPlan, 'flap_at_4');
+    assert.equal(scene.lateCount, 0);
+    assert.equal(scene.history[0].late, false);
+});
+
+test('stale response is ignored after a reset', async () => {
+    let resolve;
+    const { scene, tick } = sceneHarness(() => new Promise(r => { resolve = r; }));
+    scene.state = 'running';
+    tick(); // commits window 0 (late), fires request for window 1
+    const generationAtRequest = scene.generation;
+    assert.equal(scene.requestsSent, 1);
+    scene.resetGame(); // must bump generation and cancel the in-flight request
+    assert.notEqual(scene.generation, generationAtRequest);
+    resolve(jsonResponse(200, answer('flap_now', { id: 1 })));
+    await new Promise(r => setImmediate(r));
+    await new Promise(r => setImmediate(r));
+    assert.equal(scene.pendingResponses[1], undefined);
+});
+
+test('no requests are sent when dead, paused, not started, or hidden', async () => {
+    let calls = 0;
+    const { scene, tick, context } = sceneHarness(async () => { calls++; return jsonResponse(200, answer('no_flap')); });
+
+    // idle (not started / not running)
+    for (let i = 0; i < 20; i++) tick();
+    assert.equal(calls, 0);
+
+    // paused
+    scene.state = 'paused';
+    for (let i = 0; i < 20; i++) tick();
+    assert.equal(calls, 0);
+
+    // dead
+    scene.state = 'dead';
+    for (let i = 0; i < 20; i++) tick();
+    assert.equal(calls, 0);
+
+    // hidden while running
+    scene.resetGame();
+    scene.state = 'running';
+    context.document.hidden = true;
+    tick();
+    assert.equal(calls, 0);
+    context.document.hidden = false;
+});
+
+test('flap fires at the plan\'s tick', () => {
+    const { scene, tick } = sceneHarness(() => new Promise(() => {}));
+    scene.state = 'running';
+    scene.pendingResponses[0] = {
+        status: 'resolved', plan: 'flap_at_4', probabilities: { flap_now: 0, flap_at_4: 1, flap_at_8: 0, no_flap: 0 },
+        confidence: 1, latencyMs: 10, usage: null
+    };
+    // Ticks 0..3: no flap yet, bird keeps falling under gravity from velocity 0.
+    for (let i = 0; i < 4; i++) tick();
+    assert.ok(scene.bird.velocity > 0, 'bird should be falling before the flap tick');
+    // Tick index 4 (the 5th tick of the window) is when flap_at_4 fires: jump() sets
+    // velocity to -6, then the same tick's physics step applies one tick of gravity.
+    tick();
+    assert.equal(scene.bird.velocity, -6 + GRAVITY_FOR_TEST());
+    function GRAVITY_FOR_TEST() { return 0.4; }
+});
+
+test('request for window k+1 is sent at the start of window k with an advanced state', async () => {
+    let capturedBody = null;
+    const { scene, tick } = sceneHarness(async (url, opts) => {
+        capturedBody = JSON.parse(opts.body);
+        return new Promise(() => {}); // leave pending; we only care about the body sent
+    });
+    scene.state = 'running';
+    const before = scene.gameState();
+    const leftBefore = before.pipes[0].left;
+    tick(); // commits window 0, immediately sends request for window 1
+    assert.ok(capturedBody, 'expected a request to have been sent');
+    assert.equal(capturedBody.id, 1);
+    assert.equal(capturedBody.state.pipes[0].left, leftBefore - 2 /* PIPE_SCROOL */ * HORIZON);
+});
+
+test('death cancels the in-flight request', async () => {
+    let aborted = false;
+    const { scene, tick } = sceneHarness(() => new Promise((resolve, reject) => {
+        // never resolves on its own; only rejects if aborted
+    }));
+    scene.state = 'running';
+    tick(); // window 0 commits, request for window 1 goes out
+    const rec = scene.pendingResponses[1];
+    assert.ok(rec && rec.controller);
+    const originalAbort = rec.controller.abort.bind(rec.controller);
+    rec.controller.abort = () => { aborted = true; originalAbort(); };
+    scene.die();
+    assert.equal(aborted, true);
+    assert.equal(Object.keys(scene.pendingResponses).length, 0);
+    assert.equal(scene.state, 'dead');
+});
+
+test('a session request cap stops further requests', () => {
+    let calls = 0;
+    const { scene, tick } = sceneHarness(() => { calls++; return new Promise(() => {}); });
+    scene.state = 'running';
+    scene.requestCap = 1;
+    for (let i = 0; i < HORIZON * 5; i++) tick();
+    assert.equal(calls, 1);
+    assert.equal(scene.requestsSent, 1);
+    assert.equal(scene.state, 'paused');
 });

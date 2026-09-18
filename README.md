@@ -1,52 +1,77 @@
-# Flappy Bird with Jev
+# Flappy Jev
 
-Watch mode asks TypeSafe's Jev model to choose `flap` or `coast` from the current game state. Play and neuroevolution training remain available.
+Neuroevolution Flappy Bird, with a third mode: **watch Jev**. TypeSafe's Jev model
+(a System One decision model) plays the game live. Play and Train modes are unchanged.
 
-## Run locally
+## Run
 
-Requires Node.js 22.9+ (Node 24 recommended). No npm dependencies are needed.
+Requires Node.js 22.9+ (24 tested). No npm dependencies.
 
 ```powershell
 npm start
 ```
 
-Open http://localhost:3000, choose **watch Jev**, enter your TypeSafe API key, and press **Start**. Obtain a key from https://console.typesafe.ai.
+Open http://localhost:3000 → **watch Jev** → paste your TypeSafe API key → **Start**.
+Keys come from https://console.typesafe.ai.
 
-The password field is kept only for the current watch session; it is cleared when you return to the menu. The app does not write it to localStorage, cookies, files, or logs. It sends the key to the local server, which authenticates HTTPS requests to TypeSafe. Do not expose this local development server publicly.
+Alternatively copy `.env.example` to `.env`, set `TYPESAFE_API_KEY`, restart, and leave
+the browser field empty. A key typed in the browser wins over `.env`. The browser key
+lives only in the page for the current watch session; it is never stored, and it is only
+ever sent to the local proxy, which forwards it as the `Authorization` header to
+`api.typesafe.ai` over HTTPS. Nothing logs it.
 
-Alternatively, copy `.env.example` to `.env`, set `TYPESAFE_API_KEY`, and restart the server. Leave the browser field empty to use that key. A browser-supplied key takes precedence. `.env` is ignored by Git. `TYPESAFE_MODEL` defaults to `jev-latest`; set a supported version ID to pin it. `PORT` defaults to 3000.
+## How Jev plays
 
-## Watch behavior
+The full design is in [docs/jev-design.md](docs/jev-design.md). Short version:
 
-- Jev receives exact short-term forecasts for both actions, rising/falling direction and position relative to the next gap. Coordinates and impulse behavior are explicit in the prompt (see `server.js`).
-- One Choice question selects `flap` (one jump) or `coast` (no jump) for six physics ticks, about 100 ms of simulated time.
-- State includes bird position/velocity, collision radius, the next three pipe gaps, ground position, gravity, pipe speed and jump strength. Physics and collisions remain in JavaScript.
-- Simulation freezes while awaiting Jev. Network latency therefore slows wall-clock play rather than applying decisions to an outdated position. This is a decision-paced demo, not a real-time latency benchmark.
-- The status shows the selected action, confidence, API latency and decision count. Confidence is model-reported, not a guarantee of successful play.
-- While rising, safe coast steps run locally without API calls. A safety check replaces an action predicted to collide within six ticks only when the other action is safe; the UI labels this override. This is Jev with a physics safety layer, not a pure model benchmark.
-- Requests are spaced at least 1.2 seconds apart in the browser (1 second on the server). The scene allows 60 attempted calls per page session, including failures, and Restart/Menu do not reset this budget. The server also caps attempts at 120 per API key per server process; deliberately restarting the server renews that cap. These are request caps, not currency limits.
-- Pause/Resume, Retry, Restart and Menu control the session. Hiding the tab pauses and cancels pending work. Errors stop simulation without a pretrained-model fallback. Rate limits impose a cooldown; retry manually after waiting. Death stops requests. **Play again** starts a new round in one click. Optional **Auto restart after death** waits two seconds, makes no requests during the death screen, and continues only within the remaining budget. It is off by default.
-- Requests use the paid TypeSafe API. Pause or leave watch mode to stop new calls. A request already sent may still be billed.
+- **The game never pauses for the network.** Physics runs at a fixed 60 Hz.
+- Time is split into **12-tick windows (200 ms)**. For each window Jev picks one of four
+  plans: `flap_now`, `flap_at_4`, `flap_at_8`, `no_flap`.
+- Code simulates every plan exactly and puts the outcomes in the request state (end
+  position relative to the gap centre, minimum clearance, collision within the window,
+  what happens if the bird keeps coasting). Jev answers one **Choice** question; its
+  `probabilities` drive the bars in the panel. This is the "select, don't generate"
+  pattern from the TypeSafe docs.
+- **Pipelining:** as soon as a plan is committed, the client computes the exact state at
+  the start of the *next* window and sends that request immediately, so Jev has the whole
+  200 ms to answer. Late answers fall back to `no_flap` and are counted as *late* in the
+  panel.
+- **No overrides.** What Jev picks is what the bird does. The panel shows what a plain
+  physics heuristic would have picked and the agreement rate, for comparison only.
+- **No wasted calls.** Nothing is sent while the bird is dead, the game is paused, the
+  tab is hidden, or an error is showing. In-flight requests are cancelled on death.
+  A per-session request cap (default 3000, editable) is a hard stop.
 
-The pretrained brain is no longer loaded during startup or used in watch mode. Training still uses the repository's existing neural network implementation.
+## Cost and latency
 
-## Verify
+From the TypeSafe models page at the time of writing: Jev costs **$0.042 per million
+input tokens** (output free), limits are **1,200 requests/min**, and the building guide
+says most requests finish in about **100 ms**. One request here is roughly 600–900 input
+tokens, so a minute of play (about 300 requests) costs well under a cent. The panel shows
+tokens and the running estimate from the `usage` field of each response.
+
+**Why not one persistent connection?** TypeSafe exposes an HTTP request/response API
+only; the docs have no WebSocket or streaming endpoint. The proxy keeps the TLS
+connection alive between requests (undici keep-alive), so after the first request each
+call is a single round trip. Combined with pipelining, that removes the stop-and-go
+feeling without any protocol tricks.
+
+## Tests
 
 ```powershell
 npm test
 ```
 
-Tests use mocked TypeSafe responses and cover the request contract, browser/server credentials, validation, private-file protection, service failures, timeouts, rate limits, simulation pausing, stale responses, pipe recycling and death handling. They also verify request budgets, call spacing, death idle behavior, opt-in automatic restart, rising coasting and unsafe flap suppression. They do not measure Jev's playing skill. Live performance requires an API key and empirical runs.
+Physics parity with the original `Bird`/`Pipe` classes, request contract, response
+parsing, proxy behaviour (key precedence, validation, upstream error mapping, limits,
+static-file guard) and the watch loop (stepping while pending, late fallback, stale
+responses, no calls when dead/paused/hidden, pipelined state). No live calls are made.
 
 ## Docker
 
 ```sh
 docker build -t flappy-jev .
-docker run --rm -p 127.0.0.1:3000:3000 flappy-jev
+docker run --rm -p 127.0.0.1:3000:3000 --env-file .env flappy-jev
 ```
 
-Then enter a key in the browser, or pass `--env-file .env` to `docker run`. The image explicitly copies only application assets; local secrets are not included. Static-only hosting cannot run the `/api/jev/action` proxy.
-
-## TypeSafe references
-
-Integration follows the [HTTP API](https://docs.typesafe.ai/api), [Choice primitive](https://docs.typesafe.ai/primitives/choice), [state guidance](https://docs.typesafe.ai/concepts/state) and [function calling cookbook](https://docs.typesafe.ai/cookbooks/function_calling).
+The image copies only application files. Static-only hosting cannot run the proxy.

@@ -1,305 +1,679 @@
+// WatchScene: Jev plays Flappy Bird. Physics runs at a fixed 60 Hz and never blocks
+// on the network. See docs/jev-design.md for the full contract this file implements.
 class WatchScene extends Scene {
     constructor() {
         super();
-        this.calls = 0;
-        this.callLimit = 60;
-        this.lastCallAt = -Infinity;
-        this.active = false;
+
+        // Game objects
+        this.bird = null;
+        this.pipes = [];
+
+        // State machine: 'idle' | 'running' | 'paused' | 'dead'. `error` overlays it.
+        this.state = 'idle';
+        this.error = null;
+
+        // Decision-window bookkeeping
         this.generation = 0;
-        this.controller = null;
+        this.windowIndex = 0;
+        this.windowTick = 0;
+        this.currentPlan = null;
+        this.currentForecasts = null;
+        this.pendingResponses = {};
+
+        // Stats
+        this.history = [];
+        this.lateCount = 0;
+        this.agreementTotal = 0;
+        this.agreementAgree = 0;
+        this.requestsSent = 0;
+        this.consecutiveFailures = 0;
+        this.backoffUntil = 0;
+        this.latencies = [];
+        this.tokensIn = 0;
+        this.tokensOut = 0;
+        this.deathAt = null;
+        this.warmupDeadline = 0;
+        this.startTime = 0;
+
+        // Timing
+        this.accumulator = 0;
+        this.lastFrameAt = 0;
+
+        // Fallbacks used when there is no panel (unit tests drive these directly).
+        this.requestCap = 0;
+        this.autoRestart = false;
+        this.apiKey = '';
+
+        this.panel = null;
+        this.visibilityHandler = null;
+        this.resizeHandler = null;
+        this._canvasOrigLeft = undefined;
     }
 
-    setupUI() {
-        this.panel = createDiv();
-        this.panel.addClass('jev-panel');
-        this.statusLabel = createDiv('Enter an API key or use the server key, then Start.');
-        this.statusLabel.parent(this.panel);
-        this.statusLabel.attribute('role', 'status');
-        this.keyInput = createInput('', 'password');
-        this.keyInput.parent(this.panel);
-        this.keyInput.attribute('placeholder', 'TypeSafe API key (optional with .env)');
-        this.keyInput.attribute('aria-label', 'TypeSafe API key');
-        this.keyInput.attribute('autocomplete', 'off');
-        this.keyInput.attribute('spellcheck', 'false');
-        this.pauseButton = createButton('Start');
-        this.pauseButton.parent(this.panel);
-        this.pauseButton.mouseClicked(() => {
-            if (!this.superBird.live) { this.resetGame(); }
-            if (this.calls >= this.callLimit) { this.setStatus('Session budget exhausted. No more API calls.'); return; }
-            this.paused = !this.paused;
-            if (this.paused) this.cancelDecision();
-            this.pauseButton.html(this.paused ? 'Resume' : 'Pause');
-            this.setStatus(this.paused ? 'Paused' : 'Jev ready');
-        });
-        this.retryButton = createButton('Retry');
-        this.retryButton.parent(this.panel);
-        this.retryButton.hide();
-        this.retryButton.mouseClicked(() => {
-            this.error = null;
-            this.retryButton.hide();
-            this.setStatus(this.paused ? 'Paused' : 'Jev ready');
-        });
-        this.budgetLabel = createDiv('');
-        this.budgetLabel.parent(this.panel);
-        this.autoRestart = createCheckbox(' Auto restart after death (same call budget)', false);
-        this.autoRestart.parent(this.panel);
-        this.restartButton = createButton('Restart');
-        this.restartButton.parent(this.panel);
-        this.restartButton.mouseClicked(() => this.resetGame());
-        this.returnToMenuButton = createButton('Menu');
-        this.returnToMenuButton.parent(this.panel);
-        this.returnToMenuButton.mouseClicked(() => this.sceneManager.openScene(MENU_SCENE));
-    }
-
-    setStatus(message) {
-        this.statusLabel.elt.textContent = message;
-    }
+    // ---- lifecycle ---------------------------------------------------------
 
     start() {
         super.start();
-        this.originalSize = { width, height };
-        resizeCanvas(800, 500);
-        this.dashboard = new JevDashboard(this);
-        this.setupUI();
-        this.dashboard.attachControls(this.panel);
+        this.panel = new JevPanel({
+            onStart: () => this.handleStartClick(),
+            onMenu: () => this.sceneManager.openScene(MENU_SCENE),
+            onRetry: () => this.handleRetry()
+        });
+        if (typeof document !== 'undefined' && document.body) {
+            document.body.classList.add('jev-watch-open');
+        }
         this.resetGame();
         this.visibilityHandler = () => {
-            if (document.hidden) {
-                this.paused = true;
-                this.cancelDecision();
-                this.pauseButton.html('Resume');
-                this.setStatus('Tab hidden: paused. Resume to continue.');
+            if (typeof document !== 'undefined' && document.hidden && this.state === 'running') {
+                // Pause without aborting: an in-flight answer is already paid for and is
+                // reused on resume. No new request is sent while paused.
+                this.state = 'paused';
+                if (this.panel) {
+                    this.panel.setStartButtonLabel('Resume');
+                    this.panel.setStatus('Tab hidden: paused. Resume to continue.');
+                }
             }
         };
         document.addEventListener('visibilitychange', this.visibilityHandler);
-    }
-
-    cancelDecision() {
-        this.generation++;
-        if (this.controller) this.controller.abort();
-        this.controller = null;
-        this.pending = false;
-        this.readyDecision = null;
-    }
-
-    resetGame() {
-        this.cancelDecision();
-        this.active = true;
-        this.deathAt = null;
-        this.paused = true;
-        this.error = null;
-        this.framesRemaining = 0;
-        this.readyDecision = null;
-        this.decisions = 0;
-        this.elapsed = 0;
-        this.lastFrameAt = performance.now();
-        this.pauseButton.html('Start');
-        this.retryButton.hide();
-        this.lastControl = null;
-        this.setStatus('Enter an API key or use the server key, then Start.');
-        this.superBird = new Bird(BIRD_X, Math.min(100, (height - GROUND_HEIGHT) / 2));
-        this.pipes = [];
-        const groundY = height - GROUND_HEIGHT;
-        const margin = Math.min(PIPE_NO_GAP_ZONE, (groundY - PIPE_GAP_H) / 2);
-        for (let i = 1; i <= width / (PIPE_BETWEEN + PIPE_WIDTH) + 2; i++) {
-            new Pipe(width - PIPE_WIDTH + i * (PIPE_BETWEEN + PIPE_WIDTH),
-                random(Math.max(PIPE_GAP_H / 2, margin), Math.min(groundY - PIPE_GAP_H / 2, groundY - margin)));
+        if (typeof window !== 'undefined') {
+            this.resizeHandler = () => this.updateLayout();
+            window.addEventListener('resize', this.resizeHandler);
         }
-        if (this.dashboard && this.calls === 0) this.dashboard.showRequest(JevContract.buildRequest(this.gameState()));
-    }
-
-    gameState() {
-        return {
-            bird: { x: this.superBird.pos.x, y: this.superBird.pos.y,
-                velocity: this.superBird.velocity, collisionRadius: this.superBird.radius - 10 },
-            world: { width, groundY: height - GROUND_HEIGHT },
-            physics: { gravity: GRAVITY, jumpPower: BIRD_JUMP_POWER, pipeSpeed: PIPE_SCROOL },
-            decisionFrames: 6,
-            pipes: this.pipes.filter(p => p.topPipe.x2 >= this.superBird.pos.x - (this.superBird.radius - 10))
-                .slice(0, 3).map(p => ({ left: p.topPipe.x1, right: p.topPipe.x2,
-                    gapTop: p.topPipe.y2, gapBottom: p.bottomPipe.y1 }))
-        };
-    }
-
-    async requestDecision() {
-        if (!this.active || this.paused || this.error || !this.superBird.live || this.pending || this.readyDecision) return;
-        if (this.calls >= this.callLimit) {
-            this.paused = true;
-            this.pauseButton.html('Budget exhausted');
-            this.setStatus('Session budget exhausted. No more API calls.');
-            return;
-        }
-        if (performance.now() - this.lastCallAt < 1200) return;
-        this.calls++;
-        this.lastCallAt = performance.now();
-        if (this.budgetLabel) this.budgetLabel.elt.textContent = 'API attempts: ' + this.calls + ' / ' + this.callLimit;
-        const generation = this.generation;
-        const controller = new AbortController();
-        this.controller = controller;
-        this.pending = true;
-        this.setStatus('Jev is deciding...');
-        const timeout = setTimeout(() => controller.abort(), 15000);
-        try {
-            const state = this.gameState();
-            if (this.dashboard) this.dashboard.showRequest(JevContract.buildRequest(state), true);
-            const response = await fetch('/api/jev/action', {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ state, apiKey: this.keyInput.value().trim() }),
-                signal: controller.signal
-            });
-            const result = await response.json();
-            if (generation !== this.generation) return;
-            if (!response.ok) throw new Error(result.error || 'Jev request failed.');
-            if (!['flap', 'coast'].includes(result.action) || result.decisionFrames !== 6 ||
-                !Number.isFinite(result.confidence) || result.confidence < 0 || result.confidence > 1) {
-                throw new Error('Invalid Jev decision.');
-            }
-            // update() applies the result; pausing during a request never moves the bird.
-            this.readyDecision = result;
-            if (this.dashboard) this.dashboard.showResult(result);
-        } catch (error) {
-            if (generation !== this.generation) return;
-            this.error = error.name === 'AbortError' ? 'Jev timed out. Retry.' : error.message;
-            this.setStatus(this.error);
-            if (this.dashboard) {
-                this.dashboard.field('response-title', 'REQUEST FAILED');
-                this.dashboard.field('response', this.error);
-            }
-            this.retryButton.show();
-        } finally {
-            clearTimeout(timeout);
-            if (generation === this.generation) {
-                this.pending = false;
-                this.controller = null;
-            }
-        }
-    }
-
-    update() {
-        super.update();
-        const now = performance.now();
-        const delta = Math.min(now - this.lastFrameAt, 50);
-        this.lastFrameAt = now;
-        if (!this.superBird.live) {
-            this.elapsed = 0;
-            if ((typeof document === 'undefined' || !document.hidden) && this.autoRestart?.checked() && this.deathAt !== null && now - this.deathAt >= 2000 && this.calls < this.callLimit) {
-                this.resetGame();
-                this.paused = false;
-                this.pauseButton.html('Pause');
-            }
-            return;
-        }
-        if (!this.active || this.paused || this.error || this.pending) {
-            this.elapsed = 0;
-            return;
-        }
-        if (this.readyDecision) {
-            const result = this.readyDecision;
-            this.readyDecision = null;
-            const forecasts = JevPhysics.evidence(this.gameState());
-            let action = result.action;
-            // Reject a predicted immediate collision only when the other action is safer.
-            const other = action === 'flap' ? 'coast' : 'flap';
-            if (!forecasts[action].safeUntilNextDecision && forecasts[other].safeUntilNextDecision) action = other;
-            this.lastControl = action !== result.action ? 'SAFETY' : 'JEV / ' + action.toUpperCase();
-            if (action === 'flap') this.superBird.jump();
-            this.framesRemaining = result.decisionFrames;
-            this.decisions++;
-            this.setStatus(`Jev: ${result.action}${action !== result.action ? " (safety: " + action + ")" : ""} | confidence ${Math.round(result.confidence * 100)}% | ${result.latencyMs} ms | #${this.decisions}`);
-        }
-        if (this.framesRemaining === 0) {
-            this.elapsed = 0;
-            const forecast = JevPhysics.predict(this.gameState(), 'coast');
-            if (this.superBird.velocity < 0 && forecast.safeUntilNextDecision) {
-                this.framesRemaining = 6;
-                this.lastControl = 'LOCAL COAST';
-                this.setStatus('Rising: coast safely (no API call)');
-            } else {
-                if (now - this.lastCallAt < 1200) this.setStatus('Waiting for call interval (no API call)');
-                this.requestDecision();
-            }
-            return;
-        }
-        // Fixed 60 Hz physics, irrespective of display refresh rate. No network catch-up.
-        this.elapsed += delta;
-        while (this.elapsed >= 1000 / 60 && this.framesRemaining > 0 && this.superBird.live) {
-            this.elapsed -= 1000 / 60;
-            this.framesRemaining--;
-            this.step();
-        }
-    }
-
-    step() {
-        // Manage recycling here: Pipe.update's legacy recycling assumes a different scene loop.
-        const pipeCount = this.pipes.length;
-        let lastX = this.pipes[this.pipes.length - 1].pos.x;
-        this.pipes = this.pipes.filter(pipe => pipe.pos.x - pipe.velocity >= -pipe.width / 2);
-        while (this.pipes.length < pipeCount) {
-            const groundY = height - GROUND_HEIGHT;
-            lastX += PIPE_BETWEEN + PIPE_WIDTH;
-            new Pipe(lastX,
-                random(PIPE_GAP_H / 2 + 25, groundY - PIPE_GAP_H / 2 - 25));
-        }
-        this.pipes.forEach(pipe => pipe.update());
-        this.superBird.update();
-        for (const pipe of this.pipes) {
-            if (circleRect(this.superBird, pipe.topPipe) || circleRect(this.superBird, pipe.bottomPipe)) {
-                this.superBird.live = false;
-            }
-            if (this.superBird.live && pipe.hasPoint && pipe.topPipe.x2 < this.superBird.pos.x - (this.superBird.radius - 10)) {
-                this.superBird.score++;
-                pipe.hasPoint = false;
-            }
-        }
-        if (this.superBird.pos.y + (this.superBird.radius - 10) >= height - GROUND_HEIGHT || this.superBird.pos.y - (this.superBird.radius - 10) <= 0) this.superBird.live = false;
-        if (!this.superBird.live) {
-            this.cancelDecision();
-            this.deathAt = performance.now();
-            this.paused = true;
-            this.pauseButton.html('Play again');
-            this.setStatus('Game over | score ' + this.superBird.score + ' | No API calls. Play again or enable auto restart.');
-        }
-    }
-
-    draw() {
-        if (this.dashboard) this.dashboard.update();
-        background('#050d0a');
-        push();
-        stroke('#10291e');
-        strokeWeight(1);
-        for (let x = 0; x < width; x += 40) line(x, 0, x, height);
-        for (let y = 0; y < height; y += 40) line(0, y, width, y);
-        pop();
-        push();
-        stroke('#277c4d');
-        fill('#0c2e1c');
-        this.pipes.forEach(pipe => {
-            rect(pipe.topPipe.x1, 0, pipe.width, pipe.topPipe.y2);
-            rect(pipe.bottomPipe.x1, pipe.bottomPipe.y1, pipe.width, height - pipe.bottomPipe.y1);
-        });
-        noStroke();
-        fill('#e8c66b');
-        ellipse(this.superBird.pos.x, this.superBird.pos.y, this.superBird.radius, this.superBird.radius);
-        pop();
-        push();
-        noStroke();
-        fill('#0a2116');
-        rect(0, height - GROUND_HEIGHT, width, GROUND_HEIGHT);
-        textAlign(CENTER);
-        fill(255);
-        textSize(60);
-        text(this.superBird.score, width / 2, 60);
-        pop();
+        this.updateLayout();
     }
 
     exit() {
         super.exit();
-        this.active = false;
-        if (this.visibilityHandler) document.removeEventListener('visibilitychange', this.visibilityHandler);
-        this.cancelDecision();
-        if (this.keyInput) this.keyInput.value('');
-        if (this.panel) this.panel.remove();
-        if (this.dashboard) { this.dashboard.destroy(); this.dashboard = null; }
-        if (this.originalSize) resizeCanvas(this.originalSize.width, this.originalSize.height);
+        if (this.visibilityHandler && typeof document !== 'undefined') {
+            document.removeEventListener('visibilitychange', this.visibilityHandler);
+        }
+        if (this.resizeHandler && typeof window !== 'undefined') {
+            window.removeEventListener('resize', this.resizeHandler);
+        }
+        this.visibilityHandler = null;
+        this.resizeHandler = null;
+        this.cancelAllRequests();
+        this.restoreCanvasPosition();
+        if (this.panel) {
+            this.panel.clearApiKey();
+            this.panel.destroy();
+            this.panel = null;
+        }
+        if (typeof document !== 'undefined' && document.body) {
+            document.body.classList.remove('jev-watch-open');
+        }
+    }
+
+    // ---- layout --------------------------------------------------------------
+
+    findCanvas() {
+        if (typeof document === 'undefined') return null;
+        return document.querySelector('canvas');
+    }
+
+    restoreCanvasPosition() {
+        const canvasEl = this.findCanvas();
+        if (canvasEl && this._canvasOrigLeft !== undefined) {
+            canvasEl.style.left = this._canvasOrigLeft;
+        }
+        this._canvasOrigLeft = undefined;
+    }
+
+    updateLayout() {
+        if (!this.panel) return;
+        const canvasEl = this.findCanvas();
+        const wide = (typeof window !== 'undefined' ? window.innerWidth : 1200) >= 1000;
+        const PANEL_WIDTH = 360;
+        let rect = { left: 0, top: 0, width: 0, height: 0 };
+        if (canvasEl) {
+            if (this._canvasOrigLeft === undefined) this._canvasOrigLeft = canvasEl.style.left || '';
+            if (wide) {
+                const currentLeft = parseFloat(canvasEl.style.left) || 0;
+                const baseLeft = this._canvasBaseLeft !== undefined ? this._canvasBaseLeft : currentLeft;
+                this._canvasBaseLeft = baseLeft;
+                canvasEl.style.left = Math.max(0, baseLeft - PANEL_WIDTH / 2) + 'px';
+            } else if (this._canvasOrigLeft !== undefined) {
+                canvasEl.style.left = this._canvasOrigLeft;
+            }
+            if (typeof canvasEl.getBoundingClientRect === 'function') {
+                rect = canvasEl.getBoundingClientRect();
+            }
+        }
+        this.panel.layout(rect, wide);
+    }
+
+    // ---- session controls ------------------------------------------------
+
+    handleStartClick() {
+        if (this.error) return;
+        const now = this.now();
+        switch (this.state) {
+            case 'idle':
+                this.state = 'running';
+                this.lastFrameAt = now;
+                this.startTime = now;
+                this.primeFirstWindow();
+                if (this.panel) { this.panel.setStartButtonLabel('Pause'); this.panel.setStatus('Running'); }
+                break;
+            case 'running':
+                this.state = 'paused';
+                if (this.panel) { this.panel.setStartButtonLabel('Resume'); this.panel.setStatus('Paused'); }
+                break;
+            case 'paused':
+                this.state = 'running';
+                this.lastFrameAt = now;
+                if (this.panel) { this.panel.setStartButtonLabel('Pause'); this.panel.setStatus('Running'); }
+                break;
+            case 'dead':
+                this.resetGame();
+                this.state = 'running';
+                this.lastFrameAt = now;
+                this.startTime = now;
+                this.primeFirstWindow();
+                if (this.panel) { this.panel.setStartButtonLabel('Pause'); this.panel.setStatus('Running'); }
+                break;
+        }
+    }
+
+    // Window 0 has no earlier window to pipeline from, so ask Jev for it right away and
+    // hold the first tick briefly (at most WARMUP_MS) until that answer arrives.
+    primeFirstWindow() {
+        if (this.windowIndex !== 0 || this.windowTick !== 0) return;
+        this.warmupDeadline = this.now() + WatchScene.WARMUP_MS;
+        this.maybeSendRequest(0, this.gameState());
+    }
+
+    handleRetry() {
+        this.error = null;
+        if (this.panel) {
+            this.panel.clearError();
+            this.panel.setStatus(this.state === 'running' ? 'Running' : 'Paused');
+        }
+    }
+
+    enterError(message) {
+        this.error = message;
+        this.cancelAllRequests();
+        if (this.panel) {
+            this.panel.showError(message);
+            this.panel.setStatus('Error');
+        }
+    }
+
+    getCap() {
+        return this.panel ? this.panel.getCap() : this.requestCap;
+    }
+
+    getAutoRestart() {
+        return this.panel ? this.panel.getAutoRestart() : this.autoRestart;
+    }
+
+    getApiKey() {
+        return this.panel ? this.panel.getApiKey() : (this.apiKey || '');
+    }
+
+    now() {
+        return (typeof performance !== 'undefined') ? performance.now() : Date.now();
+    }
+
+    // ---- game reset --------------------------------------------------------
+
+    resetGame() {
+        this.cancelAllRequests();
+
+        this.bird = new Bird(BIRD_X, 100);
+        this.pipes = [];
+        const pipeCount = width / (PIPE_BETWEEN + PIPE_WIDTH);
+        for (let i = 1; i <= pipeCount + 2; i++) {
+            new Pipe(width - PIPE_WIDTH + i * (PIPE_BETWEEN + PIPE_WIDTH), random(PIPE_NO_GAP_ZONE, height - PIPE_NO_GAP_ZONE));
+        }
+
+        this.windowIndex = 0;
+        this.windowTick = 0;
+        this.currentPlan = null;
+        this.currentForecasts = null;
+        this.pendingResponses = {};
+
+        this.history = [];
+        this.lateCount = 0;
+        this.agreementTotal = 0;
+        this.agreementAgree = 0;
+        this.requestsSent = 0;
+        this.consecutiveFailures = 0;
+        this.backoffUntil = 0;
+        this.latencies = [];
+        this.tokensIn = 0;
+        this.tokensOut = 0;
+        this.deathAt = null;
+        this.warmupDeadline = 0;
+        this.startTime = this.now();
+
+        this.accumulator = 0;
+        this.lastFrameAt = this.now();
+
+        this.state = 'idle';
+        this.error = null;
+
+        if (this.panel) {
+            this.panel.clearError();
+            this.panel.setStartButtonLabel('Start');
+            this.panel.setStatus('Enter an API key (optional if the server has one) and press Start.');
+            this.panel.setHistory([]);
+            this.panel.setDecision({ plan: 'no_flap', probabilities: {}, confidence: null, late: false });
+            this.panel.setComparison(null, NaN);
+            this.panel.setUsage({ requests: 0, onTimePct: NaN, tokensIn: 0, tokensOut: 0, cost: 0, reqPerSec: 0 });
+            this.panel.setLastExchange(null, null);
+        }
+    }
+
+    // ---- contract state ----------------------------------------------------
+
+    gameState() {
+        const radius = this.bird.radius - 10; // collision radius, see utils.circleRect
+        return {
+            bird: { x: this.bird.pos.x, y: this.bird.pos.y, velocity: this.bird.velocity, radius },
+            world: { width, groundY: height - GROUND_HEIGHT },
+            physics: { gravity: GRAVITY, jumpPower: BIRD_JUMP_POWER, pipeSpeed: PIPE_SCROOL },
+            pipes: this.pipes
+                .filter(p => p.topPipe.x2 >= this.bird.pos.x - radius)
+                .slice(0, 4)
+                .map(p => ({ left: p.topPipe.x1, right: p.topPipe.x2, gapTop: p.topPipe.y2, gapBottom: p.bottomPipe.y1 }))
+        };
+    }
+
+    // ---- fixed-step loop ---------------------------------------------------
+
+    update() {
+        super.update();
+
+        const now = this.now();
+        let delta = now - this.lastFrameAt;
+        this.lastFrameAt = now;
+        if (!(delta >= 0)) delta = 0;
+        if (delta > 50) delta = 50;
+
+        if (this.state === 'dead') {
+            const cap = this.getCap();
+            const capOk = cap === 0 || this.requestsSent < cap;
+            const hidden = typeof document !== 'undefined' && document.hidden;
+            if (this.getAutoRestart() && this.deathAt !== null && (now - this.deathAt) >= 2000 && capOk && !hidden) {
+                this.resetGame();
+                this.state = 'running';
+                this.lastFrameAt = now;
+                this.startTime = now;
+                this.primeFirstWindow();
+                if (this.panel) { this.panel.setStartButtonLabel('Pause'); this.panel.setStatus('Running'); }
+            }
+            return;
+        }
+
+        if (this.state !== 'running' || this.error) return;
+
+        // Warm-up: before the very first tick, wait (bounded) for Jev's answer to window 0.
+        if (this.warmupDeadline) {
+            const first = this.pendingResponses[0];
+            if (first && first.status === 'pending' && now < this.warmupDeadline) {
+                this.accumulator = 0;
+                return;
+            }
+            this.warmupDeadline = 0;
+        }
+
+        this.accumulator += delta;
+        const tickMs = 1000 / 60;
+        let guard = 0;
+        // Small epsilon guards against float drift in the accumulator (e.g. 16.66666...).
+        while (this.accumulator + 1e-6 >= tickMs && this.bird.live && this.state === 'running' && guard < 240) {
+            this.accumulator -= tickMs;
+            this.tick();
+            guard++;
+        }
+    }
+
+    tick() {
+        if (this.windowTick === 0) {
+            this.commitWindow();
+        }
+        if (this.currentPlan && JevPhysics.FLAP_TICK[this.currentPlan] === this.windowTick) {
+            this.bird.jump();
+        }
+        this.step();
+        if (this.state === 'dead') return;
+        this.windowTick++;
+        if (this.windowTick >= JevPhysics.HORIZON) {
+            this.windowTick = 0;
+            this.windowIndex++;
+        }
+    }
+
+    commitWindow() {
+        const k = this.windowIndex;
+        const record = this.pendingResponses[k];
+        const state = this.gameState();
+        this.currentForecasts = JevPhysics.forecastPlans(state);
+        const physicsBest = JevPhysics.bestPlan(this.currentForecasts);
+        let plan, probabilities, confidence, latencyMs, usage, late;
+        if (record && record.status === 'resolved') {
+            plan = record.plan;
+            probabilities = record.probabilities;
+            confidence = record.confidence;
+            latencyMs = record.latencyMs;
+            usage = record.usage;
+            late = false;
+        } else {
+            // Jev's answer did not arrive in time. Use the physics heuristic for this
+            // window only and label it LATE so the fallback is never mistaken for Jev.
+            plan = physicsBest;
+            probabilities = null;
+            confidence = null;
+            latencyMs = null;
+            usage = null;
+            late = true;
+            this.lateCount++;
+        }
+        delete this.pendingResponses[k];
+
+        this.currentPlan = plan;
+        const agree = plan === physicsBest;
+        this.agreementTotal++;
+        if (agree) this.agreementAgree++;
+
+        if (!late) this.recordLatency(latencyMs);
+        if (usage) {
+            this.tokensIn += usage.input_tokens || 0;
+            this.tokensOut += usage.output_tokens || 0;
+        }
+
+        const decision = { index: k, plan, probabilities, confidence, latencyMs, late, physicsBest, agree };
+        this.history.push(decision);
+        if (this.history.length > 50) this.history.shift();
+
+        this.updatePanel(decision, physicsBest);
+
+        const nextState = JevPhysics.advance(state, plan);
+        this.maybeSendRequest(k + 1, nextState);
+    }
+
+    recordLatency(latencyMs) {
+        if (!Number.isFinite(latencyMs)) return;
+        this.latencies.push(latencyMs);
+        if (this.latencies.length > 100) this.latencies.shift();
+    }
+
+    getLatencyAvg() {
+        if (!this.latencies.length) return NaN;
+        return this.latencies.reduce((a, b) => a + b, 0) / this.latencies.length;
+    }
+
+    getLatencyP95() {
+        if (!this.latencies.length) return NaN;
+        const sorted = this.latencies.slice().sort((a, b) => a - b);
+        const idx = Math.min(sorted.length - 1, Math.ceil(0.95 * sorted.length) - 1);
+        return sorted[idx];
+    }
+
+    updatePanel(decision, physicsBest) {
+        if (!this.panel) return;
+        this.panel.setDecision({
+            plan: decision.plan,
+            probabilities: decision.probabilities || {},
+            confidence: decision.confidence,
+            late: decision.late,
+            latencyMs: decision.latencyMs,
+            latencyAvg: this.getLatencyAvg(),
+            latencyP95: this.getLatencyP95()
+        });
+        const agreePct = this.agreementTotal ? (this.agreementAgree / this.agreementTotal * 100) : NaN;
+        this.panel.setComparison(physicsBest, agreePct);
+        const totalWindows = this.history.length;
+        const onTimePct = totalWindows ? ((totalWindows - this.lateCount) / totalWindows * 100) : NaN;
+        const elapsedS = this.startTime ? (this.now() - this.startTime) / 1000 : 0;
+        this.panel.setUsage({
+            requests: this.requestsSent,
+            onTimePct,
+            tokensIn: this.tokensIn,
+            tokensOut: this.tokensOut,
+            cost: this.tokensIn * 0.042 / 1e6,
+            reqPerSec: elapsedS > 0 ? this.requestsSent / elapsedS : 0
+        });
+        this.panel.setHistory(this.history.map(h => ({
+            index: h.index,
+            plan: h.plan,
+            probability: h.probabilities ? h.probabilities[h.plan] : undefined,
+            latencyMs: h.latencyMs,
+            late: h.late
+        })));
+    }
+
+    // ---- physics step -------------------------------------------------------
+
+    step() {
+        if (this.state === 'dead') return;
+
+        // Manual pipe recycling (kept from the prototype: Pipe.update's own recycling
+        // assumes a different scene loop and would desync the pipe count here).
+        const pipeCount = this.pipes.length;
+        let lastX = this.pipes[this.pipes.length - 1].pos.x;
+        this.pipes = this.pipes.filter(pipe => pipe.pos.x - pipe.velocity >= -pipe.width / 2);
+        while (this.pipes.length < pipeCount) {
+            lastX += PIPE_BETWEEN + PIPE_WIDTH;
+            new Pipe(lastX, random(PIPE_NO_GAP_ZONE, height - PIPE_NO_GAP_ZONE));
+        }
+
+        this.pipes.forEach(pipe => pipe.update());
+        this.bird.update();
+
+        const half = this.bird.radius - 10;
+        for (const pipe of this.pipes) {
+            if (circleRect(this.bird, pipe.topPipe) || circleRect(this.bird, pipe.bottomPipe)) {
+                this.bird.live = false;
+            }
+            if (this.bird.live && pipe.hasPoint && this.bird.pos.x > pipe.pos.x) {
+                this.bird.score++;
+                pipe.hasPoint = false;
+            }
+        }
+        if (this.bird.pos.y + half >= height - GROUND_HEIGHT) {
+            this.bird.live = false;
+        }
+
+        if (!this.bird.live) {
+            this.die();
+        }
+    }
+
+    die() {
+        this.state = 'dead';
+        this.cancelAllRequests();
+        this.deathAt = this.now();
+        if (this.panel) {
+            this.panel.setStartButtonLabel('Play again');
+            this.panel.setStatus('Game over | score ' + this.bird.score);
+        }
+    }
+
+    // ---- networking ---------------------------------------------------------
+
+    cancelAllRequests() {
+        this.generation++;
+        for (const id in this.pendingResponses) {
+            const rec = this.pendingResponses[id];
+            if (rec && rec.controller) {
+                try { rec.controller.abort(); } catch (e) { /* ignore */ }
+            }
+        }
+        this.pendingResponses = {};
+    }
+
+    maybeSendRequest(id, state) {
+        const cap = this.getCap();
+        if (cap > 0 && this.requestsSent >= cap) {
+            if (this.state === 'running') {
+                this.state = 'paused';
+                if (this.panel) {
+                    this.panel.setStartButtonLabel('Resume');
+                    this.panel.setStatus('Request cap reached (' + cap + '). Raise the cap or resume manually.');
+                }
+            }
+            return;
+        }
+        if (this.state !== 'running' || this.error) return;
+        if (typeof document !== 'undefined' && document.hidden) return;
+        if (this.backoffUntil && this.now() < this.backoffUntil) return;
+        this.sendRequest(id, state);
+    }
+
+    sendRequest(id, state) {
+        const generation = this.generation;
+        const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+        this.pendingResponses[id] = { status: 'pending', controller };
+        this.requestsSent++;
+
+        const apiKey = this.getApiKey();
+        const startedAt = this.now();
+        let timeoutId = null;
+        if (controller) {
+            timeoutId = setTimeout(() => controller.abort(), 4000);
+        }
+
+        let requestForInspector = null;
+        try { requestForInspector = JevContract.buildRequest(state); } catch (e) { /* ignore */ }
+        if (this.panel) this.panel.setLastExchange(requestForInspector, null);
+
+        const fetchOptions = {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id, state, apiKey })
+        };
+        if (controller) fetchOptions.signal = controller.signal;
+
+        fetch('/api/jev/decide', fetchOptions)
+            .then(async response => {
+                if (timeoutId) clearTimeout(timeoutId);
+                const latencyMs = this.now() - startedAt;
+                let json = null;
+                try { json = await response.json(); } catch (e) { /* ignore */ }
+                if (generation !== this.generation) return;
+
+                if (response.status === 401) {
+                    delete this.pendingResponses[id];
+                    this.enterError((json && json.error) || 'TypeSafe rejected the API key.');
+                    return;
+                }
+                if (response.status === 429) {
+                    delete this.pendingResponses[id];
+                    const retryAfterMs = (json && Number.isFinite(json.retryAfterMs)) ? json.retryAfterMs : 2000;
+                    this.backoffUntil = this.now() + retryAfterMs;
+                    this.consecutiveFailures = 0;
+                    if (this.panel) this.panel.setStatus('Rate limited by TypeSafe. Backing off ' + Math.round(retryAfterMs) + ' ms.');
+                    if (this.panel) this.panel.setLastExchange(requestForInspector, json);
+                    return;
+                }
+                if (!response.ok || !json || json.id !== id || !JevContract.PLANS.includes(json.plan)) {
+                    delete this.pendingResponses[id];
+                    this.consecutiveFailures++;
+                    if (this.consecutiveFailures >= 3) {
+                        this.enterError((json && json.error) || 'Jev request failed repeatedly.');
+                    }
+                    return;
+                }
+
+                this.consecutiveFailures = 0;
+                this.pendingResponses[id] = {
+                    status: 'resolved',
+                    plan: json.plan,
+                    probabilities: json.probabilities,
+                    confidence: json.confidence,
+                    latencyMs: Number.isFinite(json.latencyMs) ? json.latencyMs : latencyMs,
+                    usage: json.usage || null
+                };
+                if (this.panel) this.panel.setLastExchange(requestForInspector, json);
+            })
+            .catch(error => {
+                if (timeoutId) clearTimeout(timeoutId);
+                if (generation !== this.generation) return;
+                delete this.pendingResponses[id];
+                this.consecutiveFailures++;
+                if (this.consecutiveFailures >= 3) {
+                    this.enterError(error && error.name === 'AbortError' ? 'Jev request timed out repeatedly.' : 'Network error talking to Jev.');
+                }
+            });
+    }
+
+    // ---- rendering ------------------------------------------------------------
+
+    draw() {
+        background(color(BG_COLOR));
+
+        this.pipes.forEach(pipe => pipe.show());
+        this.bird.show();
+
+        push();
+        noStroke();
+        fill(color(GROUND_COLOR));
+        rect(0, height - GROUND_HEIGHT, width, GROUND_HEIGHT);
+        pop();
+
+        push();
+        textAlign(CENTER);
+        fill(255);
+        textSize(60);
+        text(this.bird.score, width / 2, 60);
+        pop();
+
+        this.drawForecastOverlay();
+
+        if (this.state === 'dead') {
+            push();
+            fill(0, 0, 0, 255 * 0.7);
+            rect(0, 0, width, height);
+            pop();
+            push();
+            textAlign(CENTER);
+            fill(255);
+            textSize(60);
+            text('Game Over', width / 2, height / 2);
+            textSize(24);
+            text('Score: ' + this.bird.score, width / 2, height / 2 + 40);
+            pop();
+        }
+    }
+
+    drawForecastOverlay() {
+        if (!this.currentForecasts || this.state === 'dead') return;
+        push();
+        noFill();
+        for (const plan of JevPhysics.PLANS) {
+            const forecast = this.currentForecasts[plan];
+            if (!forecast || !forecast.trajectory || !forecast.trajectory.length) continue;
+            const chosen = plan === this.currentPlan;
+            stroke(chosen ? color(255, 255, 255, 230) : color(255, 255, 255, 55));
+            strokeWeight(chosen ? 2 : 1);
+            beginShape();
+            for (const point of forecast.trajectory) {
+                vertex(this.bird.pos.x + point.tick * PIPE_SCROOL, point.y);
+            }
+            endShape();
+        }
+        pop();
+
+        const state = this.gameState();
+        if (state.pipes.length) {
+            const p = state.pipes[0];
+            const cy = (p.gapTop + p.gapBottom) / 2;
+            push();
+            stroke(255, 255, 255, 180);
+            strokeWeight(1);
+            line(p.left, cy, p.right, cy);
+            noStroke();
+            fill(255, 255, 255, 220);
+            ellipse((p.left + p.right) / 2, cy, 6, 6);
+            pop();
+        }
     }
 }
+
+// Longest the first tick waits for Jev's answer to window 0 before starting anyway.
+WatchScene.WARMUP_MS = 600;
+
+if (typeof module !== 'undefined' && module.exports) module.exports = WatchScene;

@@ -1,0 +1,297 @@
+# Flappy Jev — design spec (v2)
+
+This document is the contract between the server, the physics/contract module and the
+browser watch scene. Every module listed here must match these signatures exactly.
+
+## Why v2 (what was wrong with the prototype)
+
+The prototype (baseline commit `cb86928`) had these problems:
+
+1. **Game froze on every request.** The simulation paused while waiting for Jev, then ran
+   6 ticks, then paused again. That is the "interrupt" feeling. TypeSafe docs say most
+   requests finish in ~100 ms and allow 1,200 requests/min, so freezing is unnecessary.
+2. **Budget paranoia made it unplayable.** 1.2 s minimum spacing, 60 attempts per page
+   session, 120 per key on the server, single in-flight request (`busy` flag). Jev costs
+   $0.042 per *million* input tokens; one request here is ~500–800 tokens, so 1000
+   requests cost about 3 cents. The user's actual concern was: **no calls while dead,
+   paused or hidden**, not throttling live play.
+3. **Code played the game, not Jev.** A "safety layer" overrode Jev's answer, and a
+   "local coast" rule skipped Jev whenever the bird was rising. Result: Jev's choice was
+   often irrelevant, and the UI could not honestly show what Jev decided.
+4. **Binary flap/coast every 6 ticks is a bad question.** It forces Jev to reason about
+   timing implicitly ("flap now or in 6 ticks?") from a 30-tick coast forecast. The
+   right TypeSafe shape is *select instead of generate*: code enumerates concrete plans,
+   simulates each one exactly, and Jev selects among described outcomes.
+5. **Visuals replaced the game.** Canvas resized to 800×500 landscape, moved into a
+   custom DOM "console", original colours dropped. Keep the original game look and add
+   a panel beside it.
+6. **Game rules changed.** Ceiling became fatal; original game has no ceiling death.
+7. Nothing was committed.
+
+## Architecture
+
+```
+browser (p5 scene, 60 Hz fixed-step physics, never blocks on network)
+   │  POST /api/jev/decide  { id, state, apiKey? }
+   ▼
+node server.js (same-origin proxy, keep-alive to TypeSafe, key never logged)
+   │  POST https://api.typesafe.ai/v1/systemone   Authorization: Bearer <key>
+   ▼
+Jev (one Choice question: which 12-tick plan)
+```
+
+### Real-time pipelined decision loop
+
+- Physics runs at a fixed 60 Hz regardless of network. **The game never pauses for Jev.**
+- Time is divided into **decision windows of `HORIZON = 12` ticks (200 ms).**
+- A **plan** covers one window. Plans: `flap_now` (flap at tick 0), `flap_at_4`,
+  `flap_at_8`, `no_flap`. Exactly one flap or none per window.
+- **Pipelining:** the moment plan *k* is committed for window *k*, the client computes
+  the exact game state at the start of window *k+1* (physics is deterministic; pipes
+  scroll at constant speed) using `JevPhysics.advance(state, plan)`, and immediately sends
+  the request for window *k+1*. Jev has a full 200 ms to answer.
+- When window *k+1* starts: if the answer arrived, apply it. If not, use `no_flap` for
+  that window, mark the decision as **late** in the UI, and discard the answer when it
+  arrives. No safety override. What Jev picks is what the bird does.
+- Request rate ≈ 5/s (300/min) while alive. Configurable via `HORIZON`.
+- **No requests when:** bird dead, game paused, not started, tab hidden
+  (`document.hidden`), or an error is showing. On death: cancel in-flight request, show
+  Game over + score, "Play again" button. Optional "Auto restart" checkbox (default off)
+  restarts after 2 s.
+- Optional per-session request cap (default 3000, editable number input; 0 = unlimited).
+  When reached, pause and say so.
+
+### Game rules (must match original master game)
+
+- Constants from `data/constants.js`: `GRAVITY=0.4`, `BIRD_JUMP_POWER=6`,
+  `PIPE_SCROOL=2`, `PIPE_GAP_H=125`, `PIPE_WIDTH=50`, `PIPE_BETWEEN=200`,
+  `GROUND_HEIGHT=50`, `BIRD_R=25`, `BIRD_X=100`.
+- Bird tick: `y += velocity; velocity += GRAVITY`. Flap: `velocity = -BIRD_JUMP_POWER`.
+- Collision radius is `BIRD_R - 10 = 15` (see `circleRect` in `data/utils.js`).
+- Death: circle–rect hit with a pipe, or `y + 15 >= groundY` (`groundY = height - GROUND_HEIGHT`).
+  **No ceiling death** (bird may go above y=0; it just wastes height).
+- Score +1 when the bird passes a pipe's centre x.
+- Canvas: keep `sketch.js` sizing (portrait `windowHeight*9/16 × windowHeight`, or full
+  window under 1000 px). Do **not** resize the canvas in the watch scene.
+
+## Module contracts
+
+All three browser modules are UMD-style: `module.exports` under Node, else a global.
+
+### `data/jev-physics.js` → global `JevPhysics`
+
+```js
+JevPhysics.HORIZON            // 12
+JevPhysics.PLANS              // ['flap_now','flap_at_4','flap_at_8','no_flap']
+JevPhysics.FLAP_TICK          // { flap_now:0, flap_at_4:4, flap_at_8:8, no_flap:null }
+JevPhysics.LOOKAHEAD          // 36  (extra ticks simulated after the window, coasting)
+
+// GameState (plain JSON, produced by the scene, sent to the server):
+// {
+//   bird:    { x, y, velocity, radius }          // radius = collision radius (15)
+//   world:   { width, groundY }
+//   physics: { gravity, jumpPower, pipeSpeed }
+//   pipes:   [{ left, right, gapTop, gapBottom }] // 1..4 pipes, sorted by left, only
+//                                                 // pipes with right >= bird.x - radius
+// }
+
+JevPhysics.simulate(state, flapTicks /* number[] */, ticks /* number */)
+// → { points: [{tick, y, velocity}], collision: null | { tick, with: 'top pipe'|'bottom pipe'|'ground' },
+//     passedGap: boolean /* bird.x passed pipes[0].right without collision */ }
+
+JevPhysics.forecastPlans(state)
+// → { flap_now: PlanOutcome, flap_at_4: ..., flap_at_8: ..., no_flap: ... }
+// PlanOutcome = {
+//   flapAtTick: 0|4|8|null,
+//   endY, endVelocity,                       // after HORIZON ticks
+//   offsetFromGapCenterAtEnd,                // endY - gapCenter (positive = below centre)
+//   minClearance,                            // min distance (px) between bird edge and any
+//                                            // pipe/ground during HORIZON ticks, negative if hit
+//   collisionWithinWindow: null | { tick, with },      // within HORIZON ticks → fatal
+//   collisionIfCoastingAfter: null | { tick, with },   // HORIZON+LOOKAHEAD, no further flap
+//   passesGapIfCoastingAfter: boolean,
+//   trajectory: [{tick,y}]                   // HORIZON+LOOKAHEAD points, for canvas overlay
+// }
+
+JevPhysics.advance(state, plan /* plan name */)
+// → GameState exactly HORIZON ticks later (bird moved with that plan, pipes shifted by
+//   pipeSpeed*HORIZON, pipes whose right < bird.x - radius dropped). Pure; does not mutate.
+
+JevPhysics.bestPlan(forecasts)
+// → plan name. Deterministic heuristic used ONLY for UI comparison ("physics would pick").
+//   Rule: exclude plans with collisionWithinWindow; among the rest prefer no
+//   collisionIfCoastingAfter, then smallest |offsetFromGapCenterAtEnd|. If all fatal, the
+//   one with latest collision tick.
+```
+
+### `data/jev-contract.js` → global `JevContract`
+
+```js
+JevContract.PLANS                  // same array as JevPhysics.PLANS
+JevContract.buildRequest(state, model = 'jev-latest')
+// → { model, state: <JevState>, questions: { plan: <ChoiceQuestion> } }
+JevContract.parseResponse(json)    // TypeSafe response body
+// → { plan, probabilities: {flap_now,...}, confidence, model, usage: {input_tokens, output_tokens} }
+//   throws Error('Invalid Jev response') on any schema problem (plan not in PLANS,
+//   probabilities missing/out of [0,1]/not summing to 1±0.02, confidence not in [0,1]).
+```
+
+**JevState** sent to the model (built from GameState + `forecastPlans`), all numbers rounded
+to 1 decimal, no raw trajectories (too many tokens):
+
+```json
+{
+  "game": "Flappy Bird. The y axis grows DOWNWARD: a smaller y is higher on screen. The bird falls under gravity and a flap gives one upward impulse. Pipes scroll left; the bird must pass through the gap between the top pipe and the bottom pipe. Touching a pipe or the ground ends the game.",
+  "bird": { "y": 210.4, "velocity": 3.2, "motion": "falling", "collisionRadius": 15 },
+  "nextGap": { "top": 160, "bottom": 285, "center": 222.5, "pipeLeftEdgeDistance": 88, "ticksUntilPipe": 44,
+               "birdRelativeToCenter": "12.1 px below centre" },
+  "followingGap": { "center": 300.5, "pipeLeftEdgeDistance": 338 } ,
+  "windowTicks": 12,
+  "plans": {
+    "flap_now":  { "flapAtTick": 0, "endY": 180.2, "endVelocity": -1.2, "offsetFromGapCenterAtEnd": -42.3,
+                   "minClearancePx": 31.0, "collisionWithinWindow": "none",
+                   "ifCoastingAfterWindow": { "collision": "top pipe at tick 21", "passesGap": false } },
+    "flap_at_4": { ... }, "flap_at_8": { ... },
+    "no_flap":   { "flapAtTick": null, ... "collisionWithinWindow": "ground at tick 9", ... }
+  }
+}
+```
+
+Question (`questions.plan`):
+
+```js
+{
+  type: 'choice',
+  instructions:
+    'Pick the plan for the next 12 ticks that keeps the bird alive and lines it up with the centre of `nextGap`. ' +
+    'Use `plans`: each plan is simulated exactly. Any plan whose `collisionWithinWindow` is not "none" is fatal and must not be chosen. ' +
+    'Among safe plans, prefer one whose `ifCoastingAfterWindow.collision` is "none" or latest, and whose `offsetFromGapCenterAtEnd` is closest to 0 ' +
+    '(negative = above centre, positive = below). A new plan is chosen every 12 ticks, so a distant coasting collision can still be avoided later; ' +
+    'do not flap when already above centre and rising.',
+  criteria: {
+    flap_now:  { what: 'Flap immediately (tick 0), then coast for the rest of the window.', outcome: 'see `plans.flap_now`' },
+    flap_at_4: { what: 'Coast 4 ticks, flap at tick 4, then coast.',                        outcome: 'see `plans.flap_at_4`' },
+    flap_at_8: { what: 'Coast 8 ticks, flap at tick 8, then coast.',                        outcome: 'see `plans.flap_at_8`' },
+    no_flap:   { what: 'No flap for all 12 ticks; keep falling or keep current momentum.',  outcome: 'see `plans.no_flap`' }
+  }
+}
+```
+
+### `server.js` → `module.exports = { createServer }`
+
+```js
+createServer({
+  apiKey = process.env.TYPESAFE_API_KEY,
+  model = process.env.TYPESAFE_MODEL || 'jev-latest',
+  fetchImpl = fetch,          // injectable for tests
+  timeoutMs = 5000,
+  maxInFlightPerKey = 3,      // pipelining allows a couple of overlapping requests
+  maxRequestsPerMinutePerKey = 600,
+  upstreamUrl = 'https://api.typesafe.ai/v1/systemone'
+})
+```
+
+- `POST /api/jev/decide` body `{ id: string|number, state: GameState, apiKey?: string }`.
+  Browser key (trimmed, non-empty) wins over env key. Missing both → 503
+  `{ error: 'No API key. Enter one in the page or set TYPESAFE_API_KEY.' }`.
+- Validate GameState shape and ranges (finite numbers, 1–4 pipes, right > left,
+  gapBottom > gapTop, physics equal to game constants). Bad → 400.
+- Build request with `JevContract.buildRequest`, call upstream with keep-alive
+  (Node 24 `fetch`/undici already reuses connections; additionally create an
+  `undici.Agent({ keepAliveTimeout: 30_000, connections: 8 })` via `require('undici')`
+  guarded in try/catch and pass it as `dispatcher` when available).
+- Response 200 `{ id, plan, probabilities, confidence, model, usage, latencyMs }`.
+- Upstream 401 → 401 `{ error: 'TypeSafe rejected the API key.' }`.
+  Upstream 429/529 → 429 `{ error, retryAfterMs }` (honour `retry-after`, default 2000).
+  Other upstream errors / invalid body / timeout → 502 with a short message; never forward
+  the upstream body text.
+- Per-key limits keyed by sha256(key): in-flight > `maxInFlightPerKey` → 429; more than
+  `maxRequestsPerMinutePerKey` in a sliding minute → 429. Nothing else throttles.
+- Same-origin guard: `Host` must be localhost/127.0.0.1 and `Origin`, if present, must
+  match. Static file serving of `index.html` and `data/**` only; dotfiles/`..` → 404.
+  No logging of keys or request bodies.
+- `if (require.main === module)` listen on `PORT || 3000`, `HOST || 127.0.0.1`.
+
+### Browser: `data/scenes/watch-scene.js` (class `WatchScene`) + `data/jev-panel.js` (class `JevPanel`)
+
+Replace `data/jev-dashboard.js` with `data/jev-panel.js`. The scene owns game and loop
+state; the panel owns DOM.
+
+Scene state machine: `idle` (key not entered / not started) → `running` ⇄ `paused` →
+`dead`. `error` overlays running/paused (pauses, shows message + Retry).
+
+Scene responsibilities:
+- `start()`: build the panel, reset the game, register `visibilitychange` (pause on hide).
+- `resetGame()`: bird at `(BIRD_X, 100)`, pipes as in the original watch scene, counters
+  reset, cancel in-flight requests (AbortController + generation counter).
+- `gameState()`: GameState per contract.
+- `update()`: fixed-step accumulator (`performance.now()`, clamp delta ≤ 50 ms, no
+  catch-up spiral). At each window start call `commitWindow()`:
+  - take `pending[k]` if resolved → plan; else `no_flap` + `late++`.
+  - record decision `{ index, plan, probabilities, confidence, latencyMs, late, physicsBest,
+    agree }`, push to `history` (keep 50).
+  - compute `nextState = JevPhysics.advance(gameState(), plan)`, send request `k+1` with
+    `id = k+1` (only if running, alive, visible, under cap).
+  - inside the window, at tick `FLAP_TICK[plan]`, call `bird.jump()`.
+- `step()`: pipes update + recycling (keep the prototype's manual recycling, it was
+  correct), bird update, collision, score. On death: cancel requests, state `dead`.
+- `draw()`: original look: `BG_COLOR` background, pipes via `pipe.show()`, bird via
+  `bird.show()`, ground `GROUND_COLOR`, score. Add a faint overlay of the four plan
+  trajectories for the current window (from `forecastPlans` at window start), chosen plan
+  brighter. Draw the gap centre marker of the next pipe. On death, dim overlay + "Game over".
+- Requests: `fetch('/api/jev/decide', {signal})`, 4 s client timeout, parse, validate
+  (`plan` in PLANS, `id` matches). Errors: 401 → error state "API key rejected"; 429 →
+  keep playing with `no_flap`, back off `retryAfterMs`, show "rate limited"; 5xx/network →
+  after 3 consecutive failures enter error state, otherwise keep playing.
+- `exit()`: remove listeners, abort requests, clear key field, remove panel.
+
+Panel (`JevPanel`) is a `<aside class="jev-panel">` appended to `document.body`, placed to
+the right of the canvas on wide screens, below it on narrow ones (CSS grid/flex, no
+canvas resizing; the canvas is positioned by `sketch.js` — on wide screens shift it left
+by half the panel width via a body class, on narrow screens stack). Sections:
+1. **Session**: password input for API key (placeholder "TypeSafe API key — or set .env"),
+   Start / Pause / Play again button, Menu button, Auto-restart checkbox, request cap
+   input, status line (`role=status`).
+2. **Jev decision**: current window plan name big, 4 horizontal probability bars
+   (`flap_now, flap_at_4, flap_at_8, no_flap`) from the latest response, confidence,
+   latency last / avg / p95, badge "LATE" when the window used the fallback.
+3. **Physics comparison**: "physics would pick: X" and running agreement %. Display only.
+4. **Usage**: requests sent, on-time %, tokens in/out (from `usage`), estimated cost
+   `$ = input_tokens * 0.042 / 1e6` shown with 6 decimals, req/s.
+5. **Last request / response** (collapsed `<details>`): pretty JSON of the last request
+   body sent to the server (without key) and last response.
+6. **History**: last 10 decisions as a compact list (`#k plan p=0.87 lat=112ms`).
+
+Styling: reuse game palette (`BG_COLOR #1b1b2f`, `PIPE_COLOR #1f4068`, `GROUND_COLOR
+#162447`, `BIRD_COLOR #e43f5a`), system font stack, high contrast, panel width ~360 px,
+scrollable. No external fonts or libraries. Keep `.main-menu-button` styles unchanged.
+
+### `index.html`
+
+Script order: constants, utils, bird, ai-bird, pipe, perceptron, neuralnetwork, evolution,
+scenesystem, main-menu-scene, play-scene, train-scene, `data/jev-physics.js`,
+`data/jev-contract.js`, `data/jev-panel.js`, `data/scenes/watch-scene.js`, style.css, sketch.
+
+### Tests (`node --test`, no dependencies)
+
+- `test/physics.test.js`: simulate matches original Bird/Pipe math tick for tick;
+  collisions with top/bottom/ground detected; `advance` equals stepping the real Bird +
+  Pipe classes 12 times; `bestPlan` rules; `forecastPlans` shape.
+- `test/contract.test.js`: `buildRequest` shape (question type choice, 4 criteria keys,
+  no trajectories in state, numbers rounded), `parseResponse` accepts a valid answer and
+  rejects bad ones.
+- `test/server.test.js`: browser key over env key; missing key 503; invalid state 400;
+  upstream 401/429/500/timeout mapping; in-flight limit; per-minute limit; static file
+  guard; key never appears in body sent upstream; `usage` forwarded.
+- `test/watch.test.js` (vm harness like the prototype): game keeps stepping while a
+  request is pending; late answer → `no_flap` + `late` counted; answer for stale
+  generation ignored; no requests when dead/paused/hidden; flap fires at the plan's tick;
+  request for k+1 is sent at the start of window k with `advance`d state; death cancels
+  in-flight; cap stops requests.
+
+### Docs
+
+`README.md`: run, key handling (browser field or `.env`), how the loop works (pipelining,
+late fallback, no safety override), cost/rate numbers from the TypeSafe models page
+($0.042 per 1M input tokens, 1,200 req/min, ~100 ms typical), why there is no WebSocket
+(TypeSafe offers HTTP only; we use keep-alive + pipelining), Docker, tests.
