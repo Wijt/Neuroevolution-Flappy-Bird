@@ -32,7 +32,7 @@ test('buildRequest produces the pure sensor shape with no outcome words', () => 
 
     const state = request.state;
     assert.deepEqual(Object.keys(state).sort(), ['game', 'hole', 'next_hole', 'pipe', 'rays', 'you'].sort());
-    assert.equal(state.you, 'falling');
+    assert.match(state.you, /^falling/);
     assert.match(state.hole, /^BELOW you by \d+ px$/);
     assert.match(state.next_hole, /^\d+ px lower than this one$/);
     assert.deepEqual(Object.keys(state.rays), ['straight ahead', 'ahead and up', 'ahead and down']);
@@ -48,7 +48,7 @@ test('buildRequest produces the pure sensor shape with no outcome words', () => 
     for (const word of ['Safe', 'CRASH', 'too low', 'too high', 'level with']) {
         assert.equal(stateText.includes(word), false, `state must not contain "${word}"`);
     }
-    assert.ok(JSON.stringify(request).length < 1700, `request too long: ${JSON.stringify(request).length} chars`);
+    assert.ok(JSON.stringify(request).length < 2100, `request too long: ${JSON.stringify(request).length} chars`);
 });
 
 test('hole straight ahead and pipe distance buckets', () => {
@@ -56,7 +56,7 @@ test('hole straight ahead and pipe distance buckets', () => {
     state.bird.y = (state.pipes[0].gapTop + state.pipes[0].gapBottom) / 2;
     state.bird.velocity = 0;
     const st = JevContract.buildRequest(state).state;
-    assert.equal(st.you, 'level');
+    assert.match(st.you, /^level/);
     assert.equal(st.hole, 'straight ahead at your height');
 
     state.pipes = [{ left: 1000, right: 1050, gapTop: 260, gapBottom: 385 }];
@@ -80,7 +80,24 @@ test('buildRequest custom model is forwarded', () => {
     assert.equal(request.model, 'jev-custom');
 });
 
-test('composePlan follows the climb/timing table', () => {
+test('composePlan uses the expected number of flaps and a danger floor', () => {
+    const dist = (none, one, two, three) => ({ probabilities: { none, one_flap: one, two_flaps: two, three_flaps: three } });
+    const answers = (climb, timing, danger) => ({ climb, timing: { choice: timing }, danger: { noul: danger } });
+    // 55/34/8/2: argmax says none, expectation 0.56 -> one flap
+    assert.equal(JevContract.composePlan(answers(dist(0.55, 0.34, 0.08, 0.02), 'now', 0.3)), 'flap_now');
+    // 95/2/2/1 -> 0.09 -> none, low danger keeps it none
+    assert.equal(JevContract.composePlan(answers(dist(0.95, 0.02, 0.02, 0.01), 'now', 0.4)), 'no_flap');
+    // ... but danger >= 0.6 turns a marginal none into one flap
+    assert.equal(JevContract.composePlan(answers(dist(0.95, 0.02, 0.02, 0.01), 'soon', 0.75)), 'flap_at_8');
+    // 4/35/48/13 -> 1.7 -> two flaps
+    assert.equal(JevContract.composePlan(answers(dist(0.04, 0.35, 0.48, 0.13), 'now', 0.7)), 'double_flap');
+    // 11/13/38/38 -> 2.03 -> two flaps; 2/7/20/71 -> 2.6 -> three
+    assert.equal(JevContract.composePlan(answers(dist(0.11, 0.13, 0.38, 0.38), 'now', 0.9)), 'double_flap');
+    assert.equal(JevContract.composePlan(answers(dist(0.02, 0.07, 0.2, 0.71), 'now', 0.9)), 'triple_flap');
+    assert.equal(JevContract.expectedFlaps(dist(0.55, 0.34, 0.08, 0.02)).toFixed(2), '0.56');
+});
+
+test('composePlan follows the climb/timing table when only a choice is given', () => {
     const withClimb = (climb, timing) => ({ climb: { choice: climb }, timing: { choice: timing } });
     assert.equal(JevContract.composePlan(withClimb('none', 'now')), 'no_flap');
     assert.equal(JevContract.composePlan(withClimb('one_flap', 'now')), 'flap_now');

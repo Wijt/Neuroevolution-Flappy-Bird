@@ -363,14 +363,18 @@ Criteria describe **controls** (what a flap does in general), never this situati
 
 ## Composition (code, `JevContract.composePlan(answers)`)
 
-| climb | timing | plan |
-| --- | --- | --- |
-| none | – | `no_flap` |
-| one_flap | now / soon / late | `flap_now` / `flap_at_8` / `flap_at_16` |
-| two_flaps | – | `double_flap` |
-| three_flaps | – | `triple_flap` |
+Policy uses Jev's whole distribution, not the argmax, and Jev's own danger judgment:
 
-`danger` is not used for control in pure mode; it is shown in the console and logged.
+1. `flaps = round(E[flaps])` where `E = 0·p(none) + 1·p(one) + 2·p(two) + 3·p(three)`.
+   A 55/34/8/2 split (argmax "none") is 0.56 expected flaps → one flap. This removes
+   the bang-bang none/three oscillation seen in live play.
+2. If that gives 0 flaps but `danger.noul >= 0.6`, flap once anyway.
+3. 1 flap → `timing` picks `flap_now` / `flap_at_8` / `flap_at_16`; 2 → `double_flap`;
+   3 → `triple_flap`; 0 → `no_flap`.
+
+Nothing in the policy looks at physics. `answers.climb.expectedFlaps` is returned for the
+console. The `you` sensor also carries speed: `falling fast` (|v| > 4), `falling`,
+`falling slowly`, same for rising, or `level (not moving up or down)`.
 
 ## API changes
 

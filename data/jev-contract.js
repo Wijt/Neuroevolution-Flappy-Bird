@@ -15,13 +15,13 @@
         climb: {
             type: 'choice',
             instructions:
-                'How much height do you need to gain in the next 0.4 seconds? Choose by where the hole is and how you are moving. ' +
-                'If the hole is below you or you are rising above it, do not flap. Being too low is worse than being too high because you keep falling.',
+                'How many flaps do you need in the next 0.4 seconds? Look at where the hole is and whether you are rising or falling. ' +
+                'You always fall unless you flap, and one flap only lifts you a little. Being too low is worse than being too high.',
             criteria: {
-                none: 'No flap. You keep falling (or keep rising if you were rising).',
-                one_flap: 'One flap. A small push: roughly holds your height over the step.',
-                two_flaps: 'Two flaps. A steady climb of about 60 px.',
-                three_flaps: 'Three flaps. The fastest climb, about 100 px.'
+                none: 'The hole is below you, or you are rising and already above the hole. No flap needed.',
+                one_flap: 'The hole is roughly at your height, or a little above you (less than about 40 px), and you are falling.',
+                two_flaps: 'The hole is clearly above you (about 40 to 90 px), or a little above you and you are falling fast.',
+                three_flaps: 'The hole is far above you (more than about 90 px), or you are falling fast toward the bottom pipe or the ground.'
             }
         },
         timing: {
@@ -38,15 +38,33 @@
 
     const TIMING_TO_PLAN = { now: 'flap_now', soon: 'flap_at_8', late: 'flap_at_16' };
 
-    // Code composes the plan; danger is not used for control in pure mode, only shown
-    // in the console and logged.
+    const FLAPS_OF = { none: 0, one_flap: 1, two_flaps: 2, three_flaps: 3 };
+    const PLAN_OF_FLAPS = { 0: 'no_flap', 2: 'double_flap', 3: 'triple_flap' };
+
+    // Expected number of flaps under Jev's whole distribution (probability-weighted), not
+    // just the argmax. A 55/34/8/2 split over none/one/two/three means 0.56 flaps: one flap,
+    // where the argmax would say none. Falls back to the chosen option when there is no
+    // distribution (tests, older payloads).
+    function expectedFlaps(climb) {
+        const p = climb && climb.probabilities;
+        if (!p) return FLAPS_OF[climb && climb.choice] || 0;
+        let e = 0;
+        for (const key in FLAPS_OF) e += (p[key] || 0) * FLAPS_OF[key];
+        return e;
+    }
+
+    // Code composes the plan from Jev's judgments. Policy, explicit and in one place:
+    //  - flaps = expected flaps rounded to the nearest whole number;
+    //  - if Jev also says danger is more likely than not (>= 0.6) and the rounding gave
+    //    zero flaps, flap once anyway: its own danger judgment outranks a marginal "none".
+    // Nothing here looks at physics; only Jev's answers.
     function composePlan(answers) {
-        const climb = answers.climb.choice;
-        if (climb === 'none') return 'no_flap';
-        if (climb === 'two_flaps') return 'double_flap';
-        if (climb === 'three_flaps') return 'triple_flap';
-        if (climb === 'one_flap') return TIMING_TO_PLAN[answers.timing.choice] || 'flap_now';
-        return 'no_flap';
+        let flaps = Math.round(expectedFlaps(answers.climb));
+        const danger = answers.danger && Number.isFinite(answers.danger.noul) ? answers.danger.noul : 0;
+        if (flaps === 0 && danger >= 0.6) flaps = 1;
+        flaps = Math.max(0, Math.min(3, flaps));
+        if (flaps === 1) return TIMING_TO_PLAN[answers.timing && answers.timing.choice] || 'flap_now';
+        return PLAN_OF_FLAPS[flaps];
     }
 
     function px(n) { return `${Math.round(Math.abs(n))} px`; }
@@ -72,8 +90,12 @@
         return 'nothing yet (pipe is far)';
     }
 
+    // Direction plus how fast: at gravity 0.4 px/tick^2 a flap sets -6, so |v| > 4 is fast.
     function motionWord(velocity) {
-        return velocity < -0.5 ? 'rising' : velocity > 0.5 ? 'falling' : 'level';
+        const speed = Math.abs(velocity);
+        if (speed <= 0.5) return 'level (not moving up or down)';
+        const dir = velocity < 0 ? 'rising' : 'falling';
+        return speed > 4 ? `${dir} fast` : speed > 1.5 ? dir : `${dir} slowly`;
     }
 
     function describeHole(diff) {
@@ -157,6 +179,7 @@
         const climb = validateChoiceAnswer(rawAnswers.climb, Object.keys(questions.climb.criteria));
         const timing = validateChoiceAnswer(rawAnswers.timing, Object.keys(questions.timing.criteria));
 
+        climb.expectedFlaps = Math.round(expectedFlaps(climb) * 100) / 100;
         const answers = { danger: { noul: dangerAnswer.noul }, climb, timing };
         return {
             answers,
@@ -168,7 +191,7 @@
         };
     }
 
-    const api = { PLANS, questions, buildRequest, parseResponse, composePlan };
+    const api = { PLANS, questions, buildRequest, parseResponse, composePlan, expectedFlaps };
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
     else root.JevContract = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
