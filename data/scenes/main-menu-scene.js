@@ -27,7 +27,7 @@ class MainMenuScene extends Scene {
             this.sceneManager.openScene(TRAIN_SCENE);
         });
 
-        this.watchButton = createButton('watch');
+        this.watchButton = createButton('watch Jev');
         this.watchButton.addClass("main-menu-button");
         this.watchButton.size("15rem", "5rem"); 
         this.watchButton.position(innerWidth/2- this.watchButton.width/2, innerHeight/2 + this.watchButton.height/2 + 40);
