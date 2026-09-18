@@ -143,26 +143,31 @@ JevContract.parseResponse(json)    // TypeSafe response body
 //   probabilities missing/out of [0,1]/not summing to 1±0.02, confidence not in [0,1]).
 ```
 
-**JevState** sent to the model (built from GameState + `forecastPlans`), all numbers rounded
-to 1 decimal, no raw trajectories (too many tokens):
+**JevState** sent to the model is plain English, not a table. Jev is a System One model:
+it judges short concrete descriptions well and must not be asked to add up ticks. Code does
+all the physics; the state says where the hole is, what three rays from the bird touch, and
+what each option leads to (about 300 input tokens).
 
 ```json
 {
-  "game": "Flappy Bird. The y axis grows DOWNWARD: a smaller y is higher on screen. The bird falls under gravity and a flap gives one upward impulse. Pipes scroll left; the bird must pass through the gap between the top pipe and the bottom pipe. Touching a pipe or the ground ends the game.",
-  "bird": { "y": 210.4, "velocity": 3.2, "motion": "falling", "collisionRadius": 15 },
-  "nextGap": { "top": 160, "bottom": 285, "center": 222.5, "pipeLeftEdgeDistance": 88, "ticksUntilPipe": 44,
-               "birdRelativeToCenter": "12.1 px below centre" },
-  "followingGap": { "center": 300.5, "pipeLeftEdgeDistance": 338 } ,
-  "windowTicks": 24,
-  "plans": {
-    "flap_now":  { "flapAtTick": 0, "endY": 180.2, "endVelocity": -1.2, "offsetFromGapCenterAtEnd": -42.3,
-                   "minClearancePx": 31.0, "collisionWithinWindow": "none",
-                   "ifCoastingAfterWindow": { "collision": "top pipe at tick 21", "passesGap": false } },
-    "flap_at_8": { ... }, "flap_at_16": { ... },
-    "no_flap":   { "flapAtTick": null, ... "collisionWithinWindow": "ground at tick 9", ... }
+  "game": "You are the bird in Flappy Bird. Fly through the hole between the top pipe and the bottom pipe. Touching a pipe or the ground kills you.",
+  "now": "You are falling. The hole is ABOVE you by 98 px. The pipe is far (about 1.5 s away). The hole after that is 140 px lower.",
+  "rays": { "straight ahead": "the bottom pipe", "ahead and up": "the hole - it goes through", "ahead and down": "the ground" },
+  "options": {
+    "no_flap":     "Safe: far too low by 280 px, then crashes into the ground if nothing more is done.",
+    "flap_now":    "Safe: too low by 64 px, then crashes into the ground if nothing more is done.",
+    "flap_at_8":   "Safe: far too low by 85 px.",
+    "flap_at_16":  "Safe: far too low by 157 px.",
+    "double_flap": "Safe: level with the hole.",
+    "triple_flap": "Safe: slightly too high."
   }
 }
 ```
+
+A fatal option reads `"CRASH into the top pipe."`. Offsets are bucketed: level (<10 px),
+slightly (<30), plain (<80), far (>=80). Rays go straight ahead, 45 degrees up and 45
+degrees down and report the first thing they touch: top pipe, bottom pipe, ground, the
+hole, or the sky.
 
 Question (`questions.plan`):
 
@@ -170,16 +175,12 @@ Question (`questions.plan`):
 {
   type: 'choice',
   instructions:
-    'Pick the plan for the next 24 ticks that keeps the bird alive and lines it up with the centre of `nextGap`. ' +
-    'Use `plans`: each plan is simulated exactly. Any plan whose `collisionWithinWindow` is not "none" is fatal and must not be chosen. ' +
-    'Among safe plans, prefer one whose `ifCoastingAfterWindow.collision` is "none" or latest, and whose `offsetFromGapCenterAtEnd` is closest to 0 ' +
-    '(negative = above centre, positive = below). A new plan is chosen every 24 ticks, so a distant coasting collision can still be avoided later; ' +
-    'do not flap when already above centre and rising.',
+    'Pick the option that keeps you alive and gets you level with the hole. Never pick an option that says CRASH. ' +
+    'If the hole is above you, pick an option that climbs; if it is below you, let yourself fall. ' +
+    'Being too low is worse than being too high because you keep falling. Each option says exactly where you end up.',
   criteria: {
-    flap_now:  { what: 'Flap immediately (tick 0), then coast for the rest of the window.', outcome: 'see `plans.flap_now`' },
-    flap_at_8: { what: 'Coast 8 ticks, flap at tick 8, then coast.',                        outcome: 'see `plans.flap_at_8`' },
-    flap_at_16: { what: 'Coast 16 ticks, flap at tick 16, then coast.',                        outcome: 'see `plans.flap_at_16`' },
-    no_flap:   { what: 'No flap for all 24 ticks; keep falling or keep current momentum.',  outcome: 'see `plans.no_flap`' }
+    no_flap: 'Do nothing and fall.',  flap_now: 'One flap right now.',  flap_at_8: 'One flap a little later.',
+    flap_at_16: 'One flap late in the step.',  double_flap: 'Two flaps: climb.',  triple_flap: 'Three flaps: climb fast.'
   }
 }
 ```

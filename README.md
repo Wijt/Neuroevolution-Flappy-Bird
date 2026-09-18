@@ -28,11 +28,12 @@ The full design is in [docs/jev-design.md](docs/jev-design.md). Short version:
 - Time is split into **24-tick windows (400 ms)**. For each window Jev picks one of six
   plans: `flap_now`, `flap_at_8`, `flap_at_16`, `no_flap`, plus `double_flap` (ticks 0 and
   12) and `triple_flap` (ticks 0, 8, 16) for fast climbs.
-- Code simulates every plan exactly and puts the outcomes in the request state (end
-  position relative to the gap centre, minimum clearance, collision within the window,
-  what happens if the bird keeps coasting). Jev answers one **Choice** question; its
-  `probabilities` drive the bars in the panel. This is the "select, don't generate"
-  pattern from the TypeSafe docs.
+- Code simulates every plan exactly and describes each outcome in one plain sentence
+  ("Safe: slightly too high." or "CRASH into the bottom pipe."), tells Jev whether the
+  hole is above or below and what three rays from the bird touch. No tick numbers or
+  tables reach the model: Jev is a fast System One judge, not a calculator. It answers
+  one **Choice** question; its `probabilities` drive the bars in the panel. This is the
+  "select, don't generate" pattern from the TypeSafe docs.
 - **Pipelining:** as soon as a plan is committed, the client computes the exact state at
   the start of the *next* window and sends that request immediately, so Jev has the whole
   400 ms to answer. Measured round trip through the proxy is about 250–300 ms. If an
@@ -48,8 +49,8 @@ The full design is in [docs/jev-design.md](docs/jev-design.md). Short version:
 
 From the TypeSafe models page at the time of writing: Jev costs **$0.042 per million
 input tokens** (output free), limits are **1,200 requests/min**, and the building guide
-says most requests finish in about **100 ms**. One request here is roughly 600–900 input
-tokens (about 1,350 measured), so a minute of play (about 150 requests) costs under a cent. The panel shows
+says most requests finish in about **100 ms**. One request here is a few hundred input
+tokens (about 300 with the plain-language state), so a minute of play (about 150 requests) costs a fraction of a cent. The panel shows
 tokens and the running estimate from the `usage` field of each response.
 
 **Why not one persistent connection?** TypeSafe exposes an HTTP request/response API

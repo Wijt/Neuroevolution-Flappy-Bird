@@ -2,81 +2,110 @@
 (function (root) {
     const physics = typeof module !== 'undefined' && module.exports ? require('./jev-physics') : root.JevPhysics;
     const PLANS = physics.PLANS;
-    const H = physics.HORIZON;
 
-    function round1(n) { return Math.round(n * 10) / 10; }
-
+    // Plain-language contract. Jev is a System One model: it judges short, concrete
+    // descriptions well and must not be asked to do arithmetic over tick tables.
+    // Code does all the physics; the state says where the hole is, what three rays from
+    // the bird touch, and what each option leads to.
     const question = {
         type: 'choice',
         instructions:
-            `Pick the plan for the next ${H} ticks that keeps the bird alive and lines it up with the centre of \`nextGap\`. ` +
-            'Use `plans`: each plan is simulated exactly. Any plan whose `collisionWithinWindow` is not "none" is fatal and must not be chosen. ' +
-            'Among safe plans, prefer one whose `ifCoastingAfterWindow.collision` is "none" or latest, and whose `offsetFromGapCenterAtEnd` is closest to 0 ' +
-            `(negative = above centre, positive = below). A new plan is chosen every ${H} ticks, so a distant coasting collision can still be avoided later; ` +
-            'Do not flap when already above centre and rising. Use `double_flap` or `triple_flap` when the bird is far below the gap centre ' +
-            'or falling toward the bottom pipe or ground and a single flap does not lift it enough; single flaps are for fine positioning.',
-        criteria: Object.fromEntries(PLANS.map(plan => {
-            const ticks = physics.FLAP_TICKS[plan];
-            const what = ticks.length === 0 ? `No flap for all ${H} ticks; keep falling or keep current momentum.`
-                : ticks.length === 1 ? (ticks[0] === 0 ? 'One flap immediately (tick 0), then coast for the rest of the window.'
-                    : `Coast ${ticks[0]} ticks, one flap at tick ${ticks[0]}, then coast.`)
-                : `${ticks.length} flaps at ticks ${ticks.join(', ')}: ${ticks.length === 3 ? 'fastest possible climb' : 'steady climb'}.`;
-            return [plan, { what, outcome: `see \`plans.${plan}\`` }];
-        }))
+            'Pick the option that keeps you alive and gets you level with the hole. Never pick an option that says CRASH. ' +
+            'If the hole is above you, pick an option that climbs; if it is below you, let yourself fall. ' +
+            'Being too low is worse than being too high because you keep falling. Each option says exactly where you end up.',
+        criteria: {
+            no_flap: 'Do nothing and fall.',
+            flap_now: 'One flap right now.',
+            flap_at_8: 'One flap a little later.',
+            flap_at_16: 'One flap late in the step.',
+            double_flap: 'Two flaps: climb.',
+            triple_flap: 'Three flaps: climb fast.'
+        }
     };
 
-    function describeCollision(collision) {
-        return collision ? `${collision.with} at tick ${collision.tick}` : 'none';
+    const CRASH_NAMES = { 'top pipe': 'the top pipe', 'bottom pipe': 'the bottom pipe', ground: 'the ground' };
+
+    function px(n) { return `${Math.round(Math.abs(n))} px`; }
+
+    function describeOffset(offset) {
+        const a = Math.abs(offset);
+        if (a < 10) return 'level with the hole';
+        const side = offset > 0 ? 'too low' : 'too high';
+        if (a < 30) return `slightly ${side}`;
+        if (a < 80) return `${side} by ${px(offset)}`;
+        return `far ${side} by ${px(offset)}`;
+    }
+
+    function describeOption(f) {
+        if (f.collisionWithinWindow) return `CRASH into ${CRASH_NAMES[f.collisionWithinWindow.with]}.`;
+        const after = f.collisionIfCoastingAfter
+            ? `, then crashes into ${CRASH_NAMES[f.collisionIfCoastingAfter.with]} if nothing more is done`
+            : '';
+        return `Safe: ${describeOffset(f.offsetFromGapCenterAtEnd)}${after}.`;
+    }
+
+    // Three rays from the bird toward the next pipe: straight ahead, ahead-and-up (45 deg),
+    // ahead-and-down (45 deg). Each reports the first thing it touches.
+    function castRay(state, dy) {
+        const bird = state.bird;
+        const pipe = state.pipes[0];
+        const groundY = state.world.groundY;
+        for (let step = 1; step <= 400; step += 2) {
+            const x = bird.x + step;
+            const y = bird.y + step * dy;
+            if (y >= groundY) return 'the ground';
+            if (y < 0) return 'the sky (too high, nothing there)';
+            if (x >= pipe.left && x <= pipe.right) {
+                if (y <= pipe.gapTop) return 'the top pipe';
+                if (y >= pipe.gapBottom) return 'the bottom pipe';
+                return 'the hole - it goes through';
+            }
+            if (x > pipe.right) return 'the hole - it goes through';
+        }
+        return 'nothing yet (pipe is far)';
+    }
+
+    function describeNow(state) {
+        const bird = state.bird;
+        const pipe = state.pipes[0];
+        const gapCenter = (pipe.gapTop + pipe.gapBottom) / 2;
+        const diff = bird.y - gapCenter;
+        const motion = bird.velocity < -0.5 ? 'rising' : bird.velocity > 0.5 ? 'falling' : 'level';
+        const hole = Math.abs(diff) < 10 ? 'The hole is straight ahead at your height.'
+            : `The hole is ${diff > 0 ? 'ABOVE' : 'BELOW'} you by ${px(diff)}.`;
+        const distance = pipe.left - bird.x - bird.radius;
+        let pipeText;
+        if (distance <= 0) pipeText = 'You are inside the pipe right now.';
+        else {
+            const secs = Math.round(distance / state.physics.pipeSpeed / 60 * 10) / 10;
+            pipeText = secs > 1 ? `The pipe is far (about ${secs} s away).`
+                : secs > 0.4 ? `The pipe is close (about ${secs} s away).`
+                : `The pipe is right ahead (about ${secs} s away).`;
+        }
+        let following = '';
+        if (state.pipes[1]) {
+            const c2 = (state.pipes[1].gapTop + state.pipes[1].gapBottom) / 2;
+            const d = c2 - gapCenter;
+            following = Math.abs(d) < 10 ? ' The hole after that is at the same height.'
+                : ` The hole after that is ${px(d)} ${d > 0 ? 'lower' : 'higher'}.`;
+        }
+        return `You are ${motion}. ${hole} ${pipeText}${following}`;
     }
 
     function buildJevState(state) {
         const forecasts = physics.forecastPlans(state);
-        const bird = state.bird;
-        const motion = bird.velocity < 0 ? 'rising' : bird.velocity > 0 ? 'falling' : 'level';
-        const pipe0 = state.pipes[0];
-        const gapCenter = (pipe0.gapTop + pipe0.gapBottom) / 2;
-        const pipeLeftEdgeDistance = pipe0.left - bird.x - bird.radius;
-        const ticksUntilPipe = Math.max(0, pipeLeftEdgeDistance / state.physics.pipeSpeed);
-        const diff = bird.y - gapCenter;
-        const birdRelativeToCenter = `${round1(Math.abs(diff))} px ${diff >= 0 ? 'below' : 'above'} centre`;
-
-        const jevState = {
-            game: 'Flappy Bird. The y axis grows DOWNWARD: a smaller y is higher on screen. The bird falls under gravity and a flap gives one upward impulse. Pipes scroll left; the bird must pass through the gap between the top pipe and the bottom pipe. Touching a pipe or the ground ends the game.',
-            bird: { y: round1(bird.y), velocity: round1(bird.velocity), motion, collisionRadius: bird.radius },
-            nextGap: {
-                top: round1(pipe0.gapTop), bottom: round1(pipe0.gapBottom), center: round1(gapCenter),
-                pipeLeftEdgeDistance: round1(pipeLeftEdgeDistance), ticksUntilPipe: round1(ticksUntilPipe),
-                birdRelativeToCenter
+        const options = {};
+        for (const plan of PLANS) options[plan] = describeOption(forecasts[plan]);
+        return {
+            game: 'You are the bird in Flappy Bird. Fly through the hole between the top pipe and the bottom pipe. Touching a pipe or the ground kills you.',
+            now: describeNow(state),
+            rays: {
+                'straight ahead': castRay(state, 0),
+                'ahead and up': castRay(state, -1),
+                'ahead and down': castRay(state, 1)
             },
-            windowTicks: physics.HORIZON,
-            plans: {}
+            options
         };
-
-        if (state.pipes[1]) {
-            const pipe1 = state.pipes[1];
-            const center1 = (pipe1.gapTop + pipe1.gapBottom) / 2;
-            jevState.followingGap = {
-                center: round1(center1),
-                pipeLeftEdgeDistance: round1(pipe1.left - bird.x - bird.radius)
-            };
-        }
-
-        for (const plan of PLANS) {
-            const f = forecasts[plan];
-            jevState.plans[plan] = {
-                flapAtTicks: f.flapTicks,
-                endY: round1(f.endY),
-                endVelocity: round1(f.endVelocity),
-                offsetFromGapCenterAtEnd: f.offsetFromGapCenterAtEnd === null ? null : round1(f.offsetFromGapCenterAtEnd),
-                minClearancePx: round1(f.minClearance),
-                collisionWithinWindow: describeCollision(f.collisionWithinWindow),
-                ifCoastingAfterWindow: {
-                    collision: describeCollision(f.collisionIfCoastingAfter),
-                    passesGap: f.passesGapIfCoastingAfter
-                }
-            };
-        }
-        return jevState;
     }
 
     function buildRequest(state, model = 'jev-latest') {

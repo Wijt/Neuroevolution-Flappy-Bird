@@ -19,7 +19,7 @@ test('JevContract.PLANS matches JevPhysics.PLANS', () => {
     assert.deepEqual(JevContract.PLANS, JevPhysics.PLANS);
 });
 
-test('buildRequest produces the documented shape', () => {
+test('buildRequest produces the plain-language shape', () => {
     const request = JevContract.buildRequest(makeState());
     assert.equal(request.model, 'jev-latest');
     assert.equal(request.questions.plan.type, 'choice');
@@ -27,33 +27,39 @@ test('buildRequest produces the documented shape', () => {
     assert.equal(typeof request.questions.plan.instructions, 'string');
 
     const state = request.state;
-    assert.equal(state.windowTicks, JevPhysics.HORIZON);
-    assert.equal(state.bird.motion, 'falling');
-    assert.equal(state.bird.collisionRadius, 15);
-    assert.ok(state.followingGap);
-    assert.deepEqual(Object.keys(state.plans).sort(), [...JevPhysics.PLANS].sort());
-    // no raw trajectories leak into the JevState sent to the model
-    assert.equal(JSON.stringify(state).includes('trajectory'), false);
-    // numbers rounded to 1 decimal
-    assert.equal(state.bird.y, 300.4);
-    assert.equal(state.bird.velocity, 2.3);
+    assert.deepEqual(Object.keys(state), ['game', 'now', 'rays', 'options']);
+    assert.match(state.now, /^You are falling\. The hole is BELOW you by \d+ px\./);
+    assert.match(state.now, /The hole after that is \d+ px lower\./);
+    assert.deepEqual(Object.keys(state.rays), ['straight ahead', 'ahead and up', 'ahead and down']);
+    assert.equal(state.rays['ahead and down'], 'the bottom pipe');
+    assert.equal(state.rays['straight ahead'], 'the hole - it goes through');
+    assert.deepEqual(Object.keys(state.options).sort(), [...JevPhysics.PLANS].sort());
     for (const plan of JevPhysics.PLANS) {
-        const p = state.plans[plan];
-        for (const field of ['endY', 'endVelocity', 'offsetFromGapCenterAtEnd', 'minClearancePx']) {
-            const v = p[field];
-            assert.ok(v === null || Math.round(v * 10) === v * 10, `${field} not rounded to 1 decimal: ${v}`);
-        }
-        assert.equal(typeof p.collisionWithinWindow, 'string');
-        assert.equal(typeof p.ifCoastingAfterWindow.collision, 'string');
-        assert.equal(typeof p.ifCoastingAfterWindow.passesGap, 'boolean');
+        assert.match(state.options[plan], /^(Safe: .*\.|CRASH into .*\.)$/);
     }
+    // no tick jargon reaches the model, and the request stays compact
+    const text = JSON.stringify(request);
+    assert.equal(/tick/i.test(text), false);
+    assert.ok(text.length < 1700, `request too long: ${text.length} chars`);
 });
 
-test('buildRequest omits followingGap when there is only one pipe', () => {
+test('a fatal option is described as a crash and a far pipe as far away', () => {
+    const state = makeState();
+    state.bird.y = 740; state.bird.velocity = 5; // about to hit the ground
+    const st = JevContract.buildRequest(state).state;
+    assert.match(st.options.no_flap, /^CRASH into the ground\.$/);
+    assert.equal(st.rays['ahead and down'], 'the ground');
+    state.bird.y = 300; state.bird.velocity = 0;
+    state.pipes = [{ left: 1000, right: 1050, gapTop: 260, gapBottom: 385 }];
+    const st2 = JevContract.buildRequest(state).state;
+    assert.match(st2.now, /The pipe is far \(about \d+(\.\d)? s away\)\.$/);
+});
+
+test('buildRequest omits the following hole when there is only one pipe', () => {
     const state = makeState();
     state.pipes = [state.pipes[0]];
     const request = JevContract.buildRequest(state);
-    assert.equal(request.state.followingGap, undefined);
+    assert.equal(/hole after that/.test(request.state.now), false);
 });
 
 test('buildRequest custom model is forwarded', () => {
