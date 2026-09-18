@@ -54,7 +54,7 @@ class WatchScene extends Scene {
 
     start() {
         super.start();
-        this.panel = new JevPanel({
+        this.panel = new JevConsole({
             onStart: () => this.handleStartClick(),
             onMenu: () => this.sceneManager.openScene(MENU_SCENE),
             onRetry: () => this.handleRetry()
@@ -111,30 +111,48 @@ class WatchScene extends Scene {
         return document.querySelector('canvas');
     }
 
+    // The console owns canvas placement once the game starts: the p5 canvas element is
+    // moved into the console's GAME frame and CSS-scaled (no resizeCanvas). On exit it is
+    // put back where p5 first placed it, inline style attribute restored verbatim.
     restoreCanvasPosition() {
         const canvasEl = this.findCanvas();
-        if (canvasEl && this._canvasOrigLeft !== undefined) {
-            canvasEl.style.left = this._canvasOrigLeft;
+        if (canvasEl && this._canvasOrigStyle !== undefined) {
+            if (typeof canvasEl.setAttribute === 'function') {
+                canvasEl.setAttribute('style', this._canvasOrigStyle);
+            }
+            if (this._canvasOrigParent && typeof this._canvasOrigParent.appendChild === 'function') {
+                this._canvasOrigParent.appendChild(canvasEl);
+            } else if (typeof document !== 'undefined' && document.body) {
+                document.body.appendChild(canvasEl);
+            }
         }
-        this._canvasOrigLeft = undefined;
+        this._canvasOrigStyle = undefined;
+        this._canvasOrigParent = undefined;
     }
 
     updateLayout() {
         if (!this.panel) return;
         const canvasEl = this.findCanvas();
-        const wide = (typeof window !== 'undefined' ? window.innerWidth : 1200) >= 1000;
-        const PANEL_WIDTH = 360;
+        const wide = (typeof window !== 'undefined' ? window.innerWidth : 1200) >= 900;
         let rect = { left: 0, top: 0, width: 0, height: 0 };
         if (canvasEl) {
-            if (this._canvasOrigLeft === undefined) this._canvasOrigLeft = canvasEl.style.left || '';
-            if (wide) {
-                const currentLeft = parseFloat(canvasEl.style.left) || 0;
-                const baseLeft = this._canvasBaseLeft !== undefined ? this._canvasBaseLeft : currentLeft;
-                this._canvasBaseLeft = baseLeft;
-                canvasEl.style.left = Math.max(0, baseLeft - PANEL_WIDTH / 2) + 'px';
-            } else if (this._canvasOrigLeft !== undefined) {
-                canvasEl.style.left = this._canvasOrigLeft;
+            if (this._canvasOrigStyle === undefined) {
+                this._canvasOrigStyle = (typeof canvasEl.getAttribute === 'function' && canvasEl.getAttribute('style')) || '';
+                this._canvasOrigParent = canvasEl.parentNode || null;
             }
+            const frame = typeof this.panel.getGameFrame === 'function' ? this.panel.getGameFrame() : null;
+            if (frame && canvasEl.parentNode !== frame) {
+                frame.appendChild(canvasEl);
+            }
+            canvasEl.style.position = 'static';
+            canvasEl.style.left = '';
+            canvasEl.style.top = '';
+            // Replaced element with auto size + both max constraints keeps its aspect ratio.
+            canvasEl.style.width = 'auto';
+            canvasEl.style.height = 'auto';
+            canvasEl.style.maxWidth = '100%';
+            canvasEl.style.maxHeight = '100%';
+            canvasEl.style.display = 'block';
             if (typeof canvasEl.getBoundingClientRect === 'function') {
                 rect = canvasEl.getBoundingClientRect();
             }
@@ -259,7 +277,7 @@ class WatchScene extends Scene {
             this.panel.setStartButtonLabel('Start');
             this.panel.setStatus('Enter an API key (optional if the server has one) and press Start.');
             this.panel.setHistory([]);
-            this.panel.setDecision({ plan: 'no_flap', probabilities: {}, confidence: null, late: false });
+            this.panel.setDecision({ plan: 'no_flap', answers: null, probabilities: {}, confidence: null, late: false });
             this.panel.setComparison(null, NaN);
             this.panel.setUsage({ requests: 0, onTimePct: NaN, tokensIn: 0, tokensOut: 0, cost: 0, reqPerSec: 0 });
             this.panel.setLastExchange(null, null);
@@ -352,11 +370,10 @@ class WatchScene extends Scene {
         const state = this.gameState();
         this.currentForecasts = JevPhysics.forecastPlans(state);
         const physicsBest = JevPhysics.bestPlan(this.currentForecasts);
-        let plan, probabilities, confidence, latencyMs, usage, late;
+        let plan, answers, latencyMs, usage, late;
         if (record && record.status === 'resolved') {
             plan = record.plan;
-            probabilities = record.probabilities;
-            confidence = record.confidence;
+            answers = record.answers;
             latencyMs = record.latencyMs;
             usage = record.usage;
             late = false;
@@ -364,8 +381,7 @@ class WatchScene extends Scene {
             // Jev's answer did not arrive in time. Use the physics heuristic for this
             // window only and label it LATE so the fallback is never mistaken for Jev.
             plan = physicsBest;
-            probabilities = null;
-            confidence = null;
+            answers = null;
             latencyMs = null;
             usage = null;
             late = true;
@@ -384,7 +400,12 @@ class WatchScene extends Scene {
             this.tokensOut += usage.output_tokens || 0;
         }
 
-        const decision = { index: k, plan, probabilities, confidence, latencyMs, late, physicsBest, agree };
+        // probabilities/confidence kept on the decision record for backward compatibility
+        // with the console UI; derived from the climb judgment.
+        const probabilities = answers && answers.climb ? answers.climb.probabilities : null;
+        const confidence = answers && answers.climb ? answers.climb.confidence : null;
+
+        const decision = { index: k, plan, answers, probabilities, confidence, latencyMs, late, physicsBest, agree };
         this.history.push(decision);
         if (this.history.length > 50) this.history.shift();
 
@@ -416,6 +437,7 @@ class WatchScene extends Scene {
         if (!this.panel) return;
         this.panel.setDecision({
             plan: decision.plan,
+            answers: decision.answers,
             probabilities: decision.probabilities || {},
             confidence: decision.confidence,
             late: decision.late,
@@ -569,7 +591,7 @@ class WatchScene extends Scene {
                     if (this.panel) this.panel.setLastExchange(requestForInspector, json);
                     return;
                 }
-                if (!response.ok || !json || json.id !== id || !JevContract.PLANS.includes(json.plan)) {
+                if (!response.ok || !json || json.id !== id || !JevContract.PLANS.includes(json.plan) || !json.answers) {
                     delete this.pendingResponses[id];
                     this.consecutiveFailures++;
                     if (this.consecutiveFailures >= 3) {
@@ -582,8 +604,7 @@ class WatchScene extends Scene {
                 this.pendingResponses[id] = {
                     status: 'resolved',
                     plan: json.plan,
-                    probabilities: json.probabilities,
-                    confidence: json.confidence,
+                    answers: json.answers,
                     latencyMs: Number.isFinite(json.latencyMs) ? json.latencyMs : latencyMs,
                     usage: json.usage || null
                 };

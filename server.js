@@ -161,7 +161,7 @@ function createServer({
                     catch { return json(res, 502, { error: 'TypeSafe returned an invalid decision.' }); }
 
                     return json(res, 200, {
-                        id, plan: result.plan, probabilities: result.probabilities, confidence: result.confidence,
+                        id, plan: result.plan, answers: result.answers,
                         model: result.model, usage: result.usage, latencyMs: Date.now() - started
                     });
                 } catch {

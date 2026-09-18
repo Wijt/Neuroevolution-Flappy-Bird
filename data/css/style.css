@@ -59,95 +59,156 @@ body {
 .return-to-menu-button:active {
     border-color: red;
 }
-/* Watch-Jev instrumentation panel. Palette matches the game (data/constants.js). */
+/* Jev judgment console. TypeSafe-Doom-style phosphor-green terminal look. */
+body.jev-console-open,
 body.jev-watch-open {
     overflow: auto;
+    background: #050a06;
 }
-.jev-panel {
+.jev-console {
     box-sizing: border-box;
-    background: #162447;
-    color: #eef2ff;
-    font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    z-index: 20;
-    overflow-y: auto;
-    border-left: 2px solid #1f4068;
-    padding: 16px 16px 32px;
-}
-.jev-panel * { box-sizing: border-box; }
-.jev-panel h2 {
-    font-size: 12px;
-    letter-spacing: .08em;
-    text-transform: uppercase;
-    color: #8fa3d6;
-    margin: 20px 0 8px;
-    border-top: 1px solid #1f4068;
-    padding-top: 14px;
-}
-.jev-panel section:first-of-type h2 { border-top: none; padding-top: 0; margin-top: 0; }
-.jev-panel label { display: block; font-size: 11px; color: #b9c4e6; margin: 8px 0 4px; }
-.jev-panel input[type="password"],
-.jev-panel input[type="number"] {
+    display: grid;
+    grid-template-columns: minmax(280px, 38%) 1fr;
+    grid-template-areas:
+        "game side"
+        "status status"
+        "graph graph";
+    gap: 10px;
     width: 100%;
-    padding: 8px;
-    border-radius: 4px;
-    border: 1px solid #1f4068;
-    background: #0f1b38;
-    color: #eef2ff;
+    min-height: 100vh;
+    padding: 10px;
+    background: #050a06;
+    color: #b8ffd4;
+    font: 13px/1.5 Consolas, "SF Mono", Menlo, monospace;
+}
+.jev-console * { box-sizing: border-box; }
+.jev-console-label {
+    font-size: 11px;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: #39ff8a;
+    margin: 0 0 8px;
+}
+.jev-console-panel {
+    border: 1px solid #1f7a45;
+    padding: 10px;
+    margin-bottom: 10px;
+    background: #071409;
+}
+.jev-console-game { grid-area: game; height: calc(100vh - 20px); min-height: 320px; }
+.jev-console-game-frame {
+    border: 1px solid #1f7a45;
+    background: #010402;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+}
+.jev-console-side { grid-area: side; min-width: 0; }
+.jev-console-status-line {
+    grid-area: status;
+    border: 1px solid #1f7a45;
+    padding: 8px 10px;
+    background: #071409;
+    color: #39ff8a;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    font-size: 12px;
+}
+.jev-console-status-line.jev-late { color: #ffb347; border-color: #ffb347; }
+.jev-console-graph { grid-area: graph; border: 1px solid #1f7a45; padding: 10px; background: #071409; }
+.jev-console-graph-svg { width: 100%; height: auto; min-height: 220px; display: block; }
+
+.jev-console-row { display: flex; gap: 8px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
+.jev-console-row label { font-size: 11px; color: #6fd39a; text-transform: uppercase; }
+.jev-console input[type="password"],
+.jev-console input[type="number"] {
+    width: 100%;
+    padding: 7px 8px;
+    border: 1px solid #1f7a45;
+    background: #010402;
+    color: #b8ffd4;
     font: inherit;
 }
-.jev-panel input[type="checkbox"] { accent-color: #e43f5a; margin-right: 6px; }
-.jev-panel button {
+.jev-console-row input[type="number"] { width: 70px; }
+.jev-console input[type="checkbox"] { accent-color: #39ff8a; margin-right: 4px; }
+.jev-console-checkbox { display: flex; align-items: center; font-size: 11px; color: #6fd39a; text-transform: uppercase; }
+.jev-console button {
     cursor: pointer;
-    padding: 7px 12px;
-    margin: 8px 6px 0 0;
-    border-radius: 4px;
-    border: 1px solid #1f4068;
-    background: #1f4068;
-    color: #eef2ff;
+    padding: 6px 12px;
+    border: 1px solid #39ff8a;
+    background: #0c2417;
+    color: #b8ffd4;
+    text-transform: uppercase;
+    letter-spacing: .04em;
     font: inherit;
 }
-.jev-panel button:hover { background: #28517f; }
-.jev-panel button:disabled { opacity: .5; cursor: default; }
-.jev-panel .jev-status { min-height: 18px; font-size: 12px; color: #ffd479; margin-top: 8px; }
-.jev-panel .jev-plan-name { font-size: 22px; font-weight: 700; color: #ffffff; margin: 4px 0; }
-.jev-panel .jev-late-badge { display: inline-block; background: #e43f5a; color: #fff; font-size: 10px; font-weight: 700; letter-spacing: .05em; padding: 2px 6px; border-radius: 3px; margin-left: 8px; vertical-align: middle; }
-.jev-panel .jev-bar-row { display: flex; align-items: center; gap: 8px; font-size: 11px; margin: 4px 0; }
-.jev-panel .jev-bar-label { width: 84px; flex: 0 0 auto; color: #b9c4e6; }
-.jev-panel .jev-bar-track { flex: 1 1 auto; height: 8px; background: #0f1b38; border-radius: 4px; overflow: hidden; }
-.jev-panel .jev-bar-fill { display: block; height: 100%; background: #e43f5a; width: 0%; }
-.jev-panel .jev-bar-fill.chosen { background: #58ef91; }
-.jev-panel .jev-bar-pct { width: 40px; flex: 0 0 auto; text-align: right; color: #eef2ff; }
-.jev-panel .jev-meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; font-size: 11px; color: #b9c4e6; }
-.jev-panel .jev-meta-grid b { display: block; color: #eef2ff; font-size: 13px; font-weight: 600; }
-.jev-panel details { margin-top: 8px; border: 1px solid #1f4068; border-radius: 4px; }
-.jev-panel summary { cursor: pointer; padding: 8px; font-size: 11px; color: #b9c4e6; }
-.jev-panel pre {
-    margin: 0; padding: 8px; max-height: 220px; overflow: auto;
+.jev-console button:hover { background: #16351f; }
+.jev-console button:disabled { opacity: .5; cursor: default; }
+.jev-console-status { min-height: 16px; font-size: 11px; color: #ffd479; margin-top: 8px; }
+.jev-console-error { color: #ff5c5c; font-size: 11px; margin-top: 6px; }
+
+.jev-console-director-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(60px, 1fr)); gap: 6px 10px; font-size: 10px; color: #6fd39a; text-transform: uppercase; }
+.jev-console-meta-cell b, .jev-console-director-grid b { display: block; color: #39ff8a; font-size: 14px; font-weight: 700; }
+
+.jev-console-plan-name { font-size: 20px; font-weight: 700; color: #ffffff; margin: 2px 0 10px; text-transform: uppercase; }
+.jev-console-plan-name.jev-late { color: #ffb347; }
+.jev-console-late-badge { display: inline-block; background: #ffb347; color: #10230f; font-size: 10px; font-weight: 700; letter-spacing: .05em; padding: 2px 6px; margin-left: 8px; vertical-align: middle; }
+
+.jev-console-card { border: 1px solid #1f7a45; padding: 8px; margin-bottom: 8px; }
+.jev-console-card-head { margin-bottom: 4px; }
+.jev-console-tag { font-size: 10px; letter-spacing: .1em; color: #050a06; background: #39ff8a; padding: 2px 6px; }
+.jev-console-instructions { font-size: 10px; color: #1f7a45; margin: 4px 0 8px; }
+.jev-console-noul { margin-left: 8px; font-weight: 700; color: #39ff8a; }
+
+.jev-console-bar-row { display: flex; align-items: center; gap: 8px; font-size: 11px; margin: 3px 0; }
+.jev-console-bar-label { width: 60px; flex: 0 0 auto; color: #6fd39a; }
+.jev-console-bar-label.chosen { color: #39ff8a; font-weight: 700; }
+.jev-console-bar-track { flex: 1 1 auto; height: 8px; background: #010402; border: 1px solid #1f7a45; overflow: hidden; }
+.jev-console-bar-fill { display: block; height: 100%; background: #1f7a45; width: 0%; }
+.jev-console-bar-fill.chosen { background: #39ff8a; }
+.jev-console-bar-pct { width: 36px; flex: 0 0 auto; text-align: right; color: #b8ffd4; }
+.jev-console-conf { font-size: 10px; color: #6fd39a; margin-top: 2px; }
+
+.jev-console-sitrep { font-size: 11px; color: #b8ffd4; }
+.jev-console-sitrep-row { display: flex; gap: 6px; margin: 2px 0; }
+.jev-console-sitrep-key { color: #6fd39a; flex: 0 0 auto; text-transform: uppercase; }
+.jev-console-sitrep-val { color: #b8ffd4; word-break: break-word; }
+
+.jev-console details { margin-top: 6px; border: 1px solid #1f7a45; }
+.jev-console summary { cursor: pointer; padding: 6px 8px; font-size: 10px; color: #6fd39a; text-transform: uppercase; }
+.jev-console pre {
+    margin: 0; padding: 8px; max-height: 200px; overflow: auto;
     font: 10px/1.5 Consolas, "Courier New", monospace;
-    color: #9fd3ff; white-space: pre-wrap; word-break: break-word;
-    border-top: 1px solid #1f4068;
+    color: #9fffca; white-space: pre-wrap; word-break: break-word;
+    border-top: 1px solid #1f7a45;
 }
-.jev-panel .jev-history { list-style: none; margin: 0; padding: 0; max-height: 160px; overflow-y: auto; font: 11px/1.7 Consolas, "Courier New", monospace; color: #b9c4e6; }
-.jev-panel .jev-history li { border-bottom: 1px solid #1f4068; padding: 2px 0; }
-.jev-panel .jev-error { color: #ff8a8a; font-size: 12px; margin-top: 8px; }
+.jev-console-history { list-style: none; margin: 0; padding: 0; max-height: 160px; overflow-y: auto; font: 10px/1.7 Consolas, "Courier New", monospace; color: #6fd39a; }
+.jev-console-history li { border-bottom: 1px solid #1f7a45; padding: 2px 0; }
 
-/* Wide layout: panel fixed to the right, canvas shifted left to make room. */
-body.jev-watch-wide { overflow: hidden; }
-body.jev-watch-wide .jev-panel {
-    position: fixed;
-    top: 0;
-    right: 0;
-    width: 360px;
-    height: 100vh;
-}
+/* Graph nodes/edges. */
+.jev-graph-node rect { fill: #010402; stroke: #1f7a45; stroke-width: 1; }
+.jev-graph-node text { fill: #6fd39a; font: 9px Consolas, monospace; }
+.jev-graph-node.active rect { stroke: #39ff8a; stroke-width: 1.5; }
+.jev-graph-node.active text { fill: #39ff8a; font-weight: 700; }
+.jev-graph-node.late rect { stroke: #ffb347; stroke-width: 1.5; }
+.jev-graph-node.late text { fill: #ffb347; font-weight: 700; }
+.jev-graph-edge { fill: none; stroke: #1f7a45; stroke-width: 1; opacity: .25; }
+.jev-graph-edge.active { stroke: #39ff8a; opacity: 1; }
+.jev-graph-edge.late { stroke: #ffb347; opacity: 1; }
 
-/* Narrow layout: panel stacks below the canvas, page scrolls. */
-body.jev-watch-narrow .jev-panel {
-    position: absolute;
-    width: min(480px, calc(100vw - 24px));
-    left: 50%;
-    transform: translateX(-50%);
-    max-height: 70vh;
-    border-radius: 8px;
-    border: 1px solid #1f4068;
+/* Below 900px: stack everything and let the page scroll. */
+@media (max-width: 899px) {
+    .jev-console {
+        grid-template-columns: 1fr;
+        grid-template-areas:
+            "game"
+            "side"
+            "status"
+            "graph";
+    }
+    .jev-console-graph-svg { min-height: 260px; }
+    .jev-console-game { height: 60vh; min-height: 260px; }
 }

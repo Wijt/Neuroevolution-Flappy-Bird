@@ -19,47 +19,60 @@ test('JevContract.PLANS matches JevPhysics.PLANS', () => {
     assert.deepEqual(JevContract.PLANS, JevPhysics.PLANS);
 });
 
-test('buildRequest produces the plain-language shape', () => {
+test('buildRequest produces the pure sensor shape with no outcome words', () => {
     const request = JevContract.buildRequest(makeState());
     assert.equal(request.model, 'jev-latest');
-    assert.equal(request.questions.plan.type, 'choice');
-    assert.deepEqual(Object.keys(request.questions.plan.criteria).sort(), [...JevPhysics.PLANS].sort());
-    assert.equal(typeof request.questions.plan.instructions, 'string');
+
+    const q = request.questions;
+    assert.equal(q.danger.type, 'noul');
+    assert.equal(q.climb.type, 'choice');
+    assert.deepEqual(Object.keys(q.climb.criteria).sort(), ['none', 'one_flap', 'three_flaps', 'two_flaps'].sort());
+    assert.equal(q.timing.type, 'choice');
+    assert.deepEqual(Object.keys(q.timing.criteria).sort(), ['late', 'now', 'soon'].sort());
 
     const state = request.state;
-    assert.deepEqual(Object.keys(state), ['game', 'now', 'rays', 'options']);
-    assert.match(state.now, /^You are falling\. The hole is BELOW you by \d+ px\./);
-    assert.match(state.now, /The hole after that is \d+ px lower\./);
+    assert.deepEqual(Object.keys(state).sort(), ['game', 'hole', 'next_hole', 'pipe', 'rays', 'you'].sort());
+    assert.equal(state.you, 'falling');
+    assert.match(state.hole, /^BELOW you by \d+ px$/);
+    assert.match(state.next_hole, /^\d+ px lower than this one$/);
     assert.deepEqual(Object.keys(state.rays), ['straight ahead', 'ahead and up', 'ahead and down']);
     assert.equal(state.rays['ahead and down'], 'the bottom pipe');
     assert.equal(state.rays['straight ahead'], 'the hole - it goes through');
-    assert.deepEqual(Object.keys(state.options).sort(), [...JevPhysics.PLANS].sort());
-    for (const plan of JevPhysics.PLANS) {
-        assert.match(state.options[plan], /^(Safe: .*\.|CRASH into .*\.)$/);
+
+    // Nothing about option outcomes may reach the model, in the sensor state.
+    // (The rays' "too high, nothing there" phrase is a v2-carried ray description, not
+    // an option-outcome judgement, so outcome words are checked outside `rays`.)
+    const { rays, ...outcomeFreeFields } = state;
+    const stateText = JSON.stringify(outcomeFreeFields);
+    assert.equal(/tick/i.test(JSON.stringify(state)), false);
+    for (const word of ['Safe', 'CRASH', 'too low', 'too high', 'level with']) {
+        assert.equal(stateText.includes(word), false, `state must not contain "${word}"`);
     }
-    // no tick jargon reaches the model, and the request stays compact
-    const text = JSON.stringify(request);
-    assert.equal(/tick/i.test(text), false);
-    assert.ok(text.length < 1700, `request too long: ${text.length} chars`);
+    assert.ok(JSON.stringify(request).length < 1700, `request too long: ${JSON.stringify(request).length} chars`);
 });
 
-test('a fatal option is described as a crash and a far pipe as far away', () => {
+test('hole straight ahead and pipe distance buckets', () => {
     const state = makeState();
-    state.bird.y = 740; state.bird.velocity = 5; // about to hit the ground
+    state.bird.y = (state.pipes[0].gapTop + state.pipes[0].gapBottom) / 2;
+    state.bird.velocity = 0;
     const st = JevContract.buildRequest(state).state;
-    assert.match(st.options.no_flap, /^CRASH into the ground\.$/);
-    assert.equal(st.rays['ahead and down'], 'the ground');
-    state.bird.y = 300; state.bird.velocity = 0;
+    assert.equal(st.you, 'level');
+    assert.equal(st.hole, 'straight ahead at your height');
+
     state.pipes = [{ left: 1000, right: 1050, gapTop: 260, gapBottom: 385 }];
-    const st2 = JevContract.buildRequest(state).state;
-    assert.match(st2.now, /The pipe is far \(about \d+(\.\d)? s away\)\.$/);
+    const far = JevContract.buildRequest(state).state;
+    assert.match(far.pipe, /^far \(about \d+(\.\d)? s away\)$/);
+
+    state.bird.x = 1010;
+    const inside = JevContract.buildRequest(state).state;
+    assert.equal(inside.pipe, 'you are inside the pipe right now');
 });
 
-test('buildRequest omits the following hole when there is only one pipe', () => {
+test('buildRequest omits next_hole when there is only one pipe', () => {
     const state = makeState();
     state.pipes = [state.pipes[0]];
     const request = JevContract.buildRequest(state);
-    assert.equal(/hole after that/.test(request.state.now), false);
+    assert.equal('next_hole' in request.state, false);
 });
 
 test('buildRequest custom model is forwarded', () => {
@@ -67,29 +80,63 @@ test('buildRequest custom model is forwarded', () => {
     assert.equal(request.model, 'jev-custom');
 });
 
+test('composePlan follows the climb/timing table', () => {
+    const withClimb = (climb, timing) => ({ climb: { choice: climb }, timing: { choice: timing } });
+    assert.equal(JevContract.composePlan(withClimb('none', 'now')), 'no_flap');
+    assert.equal(JevContract.composePlan(withClimb('one_flap', 'now')), 'flap_now');
+    assert.equal(JevContract.composePlan(withClimb('one_flap', 'soon')), 'flap_at_8');
+    assert.equal(JevContract.composePlan(withClimb('one_flap', 'late')), 'flap_at_16');
+    assert.equal(JevContract.composePlan(withClimb('two_flaps', 'now')), 'double_flap');
+    assert.equal(JevContract.composePlan(withClimb('three_flaps', 'late')), 'triple_flap');
+});
+
 function validAnswer(overrides = {}) {
     return {
         model: 'jev-latest',
         usage: { input_tokens: 500, output_tokens: 10 },
         answers: {
-            plan: {
-                type: 'choice',
-                choice: 'flap_now',
-                probabilities: { flap_now: 0.7, flap_at_8: 0.1, flap_at_16: 0.1, double_flap: 0, triple_flap: 0, no_flap: 0.1 },
-                confidence: 0.85,
-                ...overrides
-            }
+            danger: { type: 'noul', noul: 0.2 },
+            climb: {
+                type: 'choice', choice: 'one_flap',
+                probabilities: { none: 0.1, one_flap: 0.7, two_flaps: 0.1, three_flaps: 0.1 },
+                confidence: 0.85
+            },
+            timing: {
+                type: 'choice', choice: 'now',
+                probabilities: { now: 0.8, soon: 0.1, late: 0.1 },
+                confidence: 0.9
+            },
+            ...overrides
         }
     };
 }
 
-test('parseResponse accepts a valid answer', () => {
+test('parseResponse accepts a valid answer and composes the plan', () => {
     const result = JevContract.parseResponse(validAnswer());
     assert.equal(result.plan, 'flap_now');
-    assert.equal(result.confidence, 0.85);
-    assert.deepEqual(result.probabilities, { flap_now: 0.7, flap_at_8: 0.1, flap_at_16: 0.1, double_flap: 0, triple_flap: 0, no_flap: 0.1 });
+    assert.equal(result.answers.danger.noul, 0.2);
+    assert.equal(result.answers.climb.choice, 'one_flap');
+    assert.equal(result.answers.climb.confidence, 0.85);
+    assert.deepEqual(result.answers.climb.probabilities, { none: 0.1, one_flap: 0.7, two_flaps: 0.1, three_flaps: 0.1 });
+    assert.equal(result.answers.timing.choice, 'now');
     assert.equal(result.model, 'jev-latest');
     assert.deepEqual(result.usage, { input_tokens: 500, output_tokens: 10 });
+});
+
+test('parseResponse composes double_flap and triple_flap regardless of timing', () => {
+    const data = validAnswer();
+    data.answers.climb = {
+        type: 'choice', choice: 'two_flaps',
+        probabilities: { none: 0, one_flap: 0, two_flaps: 1, three_flaps: 0 }, confidence: 0.9
+    };
+    assert.equal(JevContract.parseResponse(data).plan, 'double_flap');
+
+    const data2 = validAnswer();
+    data2.answers.climb = {
+        type: 'choice', choice: 'three_flaps',
+        probabilities: { none: 0, one_flap: 0, two_flaps: 0, three_flaps: 1 }, confidence: 0.9
+    };
+    assert.equal(JevContract.parseResponse(data2).plan, 'triple_flap');
 });
 
 test('parseResponse defaults usage when missing', () => {
@@ -99,40 +146,60 @@ test('parseResponse defaults usage when missing', () => {
     assert.deepEqual(result.usage, { input_tokens: 0, output_tokens: 0 });
 });
 
-test('parseResponse rejects a plan not in PLANS', () => {
-    assert.throws(() => JevContract.parseResponse(validAnswer({ choice: 'flap_forever' })), /Invalid Jev response/);
+test('parseResponse rejects a danger answer with wrong type or out-of-range noul', () => {
+    const badType = validAnswer();
+    badType.answers.danger = { type: 'choice', noul: 0.5 };
+    assert.throws(() => JevContract.parseResponse(badType), /Invalid Jev response/);
+
+    const outOfRange = validAnswer();
+    outOfRange.answers.danger = { type: 'noul', noul: 1.5 };
+    assert.throws(() => JevContract.parseResponse(outOfRange), /Invalid Jev response/);
+});
+
+test('parseResponse rejects a climb choice not among its criteria', () => {
+    const data = validAnswer();
+    data.answers.climb.choice = 'four_flaps';
+    assert.throws(() => JevContract.parseResponse(data), /Invalid Jev response/);
 });
 
 test('parseResponse rejects missing or out-of-range probabilities', () => {
     const data = validAnswer();
-    data.answers.plan.probabilities = { flap_now: 0.7, flap_at_8: 0.1, flap_at_16: 0.1, double_flap: 0, triple_flap: 0 };
+    delete data.answers.climb.probabilities.three_flaps;
     assert.throws(() => JevContract.parseResponse(data), /Invalid Jev response/);
+
     const data2 = validAnswer();
-    data2.answers.plan.probabilities.flap_now = 1.5;
+    data2.answers.timing.probabilities.now = 1.5;
     assert.throws(() => JevContract.parseResponse(data2), /Invalid Jev response/);
 });
 
 test('parseResponse rejects probabilities that do not sum to ~1', () => {
     const data = validAnswer();
-    data.answers.plan.probabilities = { flap_now: 0.5, flap_at_8: 0.5, flap_at_16: 0.5, double_flap: 0.5, triple_flap: 0.5, no_flap: 0.5 };
+    data.answers.climb.probabilities = { none: 0.5, one_flap: 0.5, two_flaps: 0.5, three_flaps: 0.5 };
     assert.throws(() => JevContract.parseResponse(data), /Invalid Jev response/);
 });
 
 test('parseResponse tolerates a small rounding slack in probabilities', () => {
     const data = validAnswer();
-    data.answers.plan.probabilities = { flap_now: 0.71, flap_at_8: 0.1, flap_at_16: 0.1, double_flap: 0, triple_flap: 0, no_flap: 0.1 };
+    data.answers.climb.probabilities = { none: 0.1, one_flap: 0.71, two_flaps: 0.1, three_flaps: 0.1 };
     assert.doesNotThrow(() => JevContract.parseResponse(data));
 });
 
 test('parseResponse rejects confidence out of [0,1]', () => {
-    assert.throws(() => JevContract.parseResponse(validAnswer({ confidence: 1.2 })), /Invalid Jev response/);
+    const data = validAnswer();
+    data.answers.timing.confidence = 1.2;
+    assert.throws(() => JevContract.parseResponse(data), /Invalid Jev response/);
 });
 
-test('parseResponse rejects a non-choice answer type', () => {
-    assert.throws(() => JevContract.parseResponse(validAnswer({ type: 'text' })), /Invalid Jev response/);
+test('parseResponse rejects a non-choice answer type for climb/timing', () => {
+    const data = validAnswer();
+    data.answers.climb.type = 'text';
+    assert.throws(() => JevContract.parseResponse(data), /Invalid Jev response/);
 });
 
 test('parseResponse rejects a missing answer', () => {
     assert.throws(() => JevContract.parseResponse({ answers: {} }), /Invalid Jev response/);
     assert.throws(() => JevContract.parseResponse({}), /Invalid Jev response/);
+    const missingTiming = validAnswer();
+    delete missingTiming.answers.timing;
+    assert.throws(() => JevContract.parseResponse(missingTiming), /Invalid Jev response/);
 });

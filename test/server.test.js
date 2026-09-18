@@ -9,16 +9,33 @@ const state = {
     pipes: [{ left: 400, right: 450, gapTop: 260, gapBottom: 385 }]
 };
 
-const answer = plan => ({
-    model: 'jev-test',
-    usage: { input_tokens: 500, output_tokens: 8 },
-    answers: {
-        plan: {
-            type: 'choice', choice: plan, confidence: 0.8,
-            probabilities: { flap_now: 0.7, flap_at_8: 0.1, flap_at_16: 0.1, double_flap: 0, triple_flap: 0, no_flap: 0.1 }
+const PLAN_ANSWERS = {
+    no_flap: { climb: 'none', timing: 'now' },
+    flap_now: { climb: 'one_flap', timing: 'now' },
+    flap_at_8: { climb: 'one_flap', timing: 'soon' },
+    flap_at_16: { climb: 'one_flap', timing: 'late' },
+    double_flap: { climb: 'two_flaps', timing: 'now' },
+    triple_flap: { climb: 'three_flaps', timing: 'now' }
+};
+
+const answer = plan => {
+    const { climb, timing } = PLAN_ANSWERS[plan] || PLAN_ANSWERS.no_flap;
+    return {
+        model: 'jev-test',
+        usage: { input_tokens: 500, output_tokens: 8 },
+        answers: {
+            danger: { type: 'noul', noul: 0.2 },
+            climb: {
+                type: 'choice', choice: climb, confidence: 0.8,
+                probabilities: { none: 0, one_flap: 0, two_flaps: 0, three_flaps: 0, [climb]: 1 }
+            },
+            timing: {
+                type: 'choice', choice: timing, confidence: 0.8,
+                probabilities: { now: 0, soon: 0, late: 0, [timing]: 1 }
+            }
         }
-    }
-});
+    };
+};
 
 async function app(t, options) {
     const server = createServer(options);
@@ -46,12 +63,17 @@ test('browser key overrides server key; request/response contract reaches TypeSa
     const body = await response.json();
     assert.equal(body.id, 42);
     assert.equal(body.plan, 'flap_now');
+    assert.equal(body.answers.climb.choice, 'one_flap');
+    assert.equal(body.probabilities, undefined);
+    assert.equal(body.confidence, undefined);
     assert.deepEqual(body.usage, { input_tokens: 500, output_tokens: 8 });
     assert.equal(sent.url, 'https://api.typesafe.ai/v1/systemone');
     assert.equal(sent.headers.Authorization, 'Bearer browser-secret');
     assert.ok(!sent.body.includes('secret'));
     const sentRequest = JSON.parse(sent.body);
-    assert.equal(sentRequest.questions.plan.type, 'choice');
+    assert.equal(sentRequest.questions.danger.type, 'noul');
+    assert.equal(sentRequest.questions.climb.type, 'choice');
+    assert.equal(sentRequest.questions.timing.type, 'choice');
 });
 
 test('server key works when browser key is empty', async t => {
@@ -117,7 +139,9 @@ test('other upstream errors map to 502', async t => {
 });
 
 test('an invalid model answer maps to 502', async t => {
-    const { post } = await app(t, { apiKey: 'key', fetchImpl: async () => Response.json(answer('not-a-real-plan')) });
+    const bad = answer('flap_now');
+    bad.answers.climb.choice = 'four_flaps';
+    const { post } = await app(t, { apiKey: 'key', fetchImpl: async () => Response.json(bad) });
     assert.equal((await post()).status, 502);
 });
 

@@ -69,12 +69,29 @@ function sceneHarness(fetchImpl) {
 
 const HORIZON = 24;
 
+const PLAN_ANSWERS = {
+    no_flap: { climb: 'none', timing: 'now' },
+    flap_now: { climb: 'one_flap', timing: 'now' },
+    flap_at_8: { climb: 'one_flap', timing: 'soon' },
+    flap_at_16: { climb: 'one_flap', timing: 'late' },
+    double_flap: { climb: 'two_flaps', timing: 'now' },
+    triple_flap: { climb: 'three_flaps', timing: 'now' }
+};
+
+function answersFor(plan) {
+    const { climb, timing } = PLAN_ANSWERS[plan] || PLAN_ANSWERS.no_flap;
+    return {
+        danger: { noul: 0.2 },
+        climb: { choice: climb, probabilities: { none: 0, one_flap: 0, two_flaps: 0, three_flaps: 0, [climb]: 1 }, confidence: 0.9 },
+        timing: { choice: timing, probabilities: { now: 0, soon: 0, late: 0, [timing]: 1 }, confidence: 0.9 }
+    };
+}
+
 function answer(plan, overrides) {
     return Object.assign({
         id: 0,
         plan,
-        probabilities: { flap_now: 0.1, flap_at_8: 0.1, flap_at_16: 0.1, double_flap: 0, triple_flap: 0, no_flap: 0.7, [plan]: 0.7 },
-        confidence: 0.9,
+        answers: answersFor(plan),
         model: 'jev-latest',
         usage: { input_tokens: 500, output_tokens: 20 },
         latencyMs: 42
@@ -104,6 +121,7 @@ test('late answer falls back to the physics heuristic and is labelled late', () 
     assert.equal(scene.currentPlan, expected);
     assert.equal(scene.lateCount, 1);
     assert.equal(scene.history[0].late, true);
+    assert.equal(scene.history[0].answers, null);
     assert.equal(scene.history[0].probabilities, null);
 });
 
@@ -157,13 +175,15 @@ test('a resolved answer for the current window is applied, not late', () => {
     const { scene, tick } = sceneHarness(() => new Promise(() => {}));
     scene.state = 'running';
     scene.pendingResponses[0] = {
-        status: 'resolved', plan: 'flap_at_8', probabilities: { flap_now: 0, flap_at_8: 0.8, flap_at_16: 0.1, double_flap: 0, triple_flap: 0, no_flap: 0.1 },
-        confidence: 0.8, latencyMs: 55, usage: { input_tokens: 400, output_tokens: 10 }
+        status: 'resolved', plan: 'flap_at_8', answers: answersFor('flap_at_8'),
+        latencyMs: 55, usage: { input_tokens: 400, output_tokens: 10 }
     };
     tick();
     assert.equal(scene.currentPlan, 'flap_at_8');
     assert.equal(scene.lateCount, 0);
     assert.equal(scene.history[0].late, false);
+    assert.equal(scene.history[0].answers.climb.choice, 'one_flap');
+    assert.equal(scene.history[0].probabilities.one_flap, 1);
 });
 
 test('stale response is ignored after a reset', async () => {
@@ -212,8 +232,8 @@ test('flap fires at the plan\'s tick', () => {
     const { scene, tick } = sceneHarness(() => new Promise(() => {}));
     scene.state = 'running';
     scene.pendingResponses[0] = {
-        status: 'resolved', plan: 'flap_at_8', probabilities: { flap_now: 0, flap_at_8: 1, flap_at_16: 0, double_flap: 0, triple_flap: 0, no_flap: 0 },
-        confidence: 1, latencyMs: 10, usage: null
+        status: 'resolved', plan: 'flap_at_8', answers: answersFor('flap_at_8'),
+        latencyMs: 10, usage: null
     };
     // Ticks 0..7: no flap yet, bird keeps falling under gravity from velocity 0.
     for (let i = 0; i < 8; i++) tick();

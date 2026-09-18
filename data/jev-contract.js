@@ -1,48 +1,55 @@
-// Builds the TypeSafe request (JevState + Choice question) and validates its response.
+// Builds the TypeSafe request (pure sensor state + three questions) and validates its
+// response, composing the flap plan in code from Jev's judgments.
 (function (root) {
     const physics = typeof module !== 'undefined' && module.exports ? require('./jev-physics') : root.JevPhysics;
     const PLANS = physics.PLANS;
 
-    // Plain-language contract. Jev is a System One model: it judges short, concrete
-    // descriptions well and must not be asked to do arithmetic over tick tables.
-    // Code does all the physics; the state says where the hole is, what three rays from
-    // the bird touch, and what each option leads to.
-    const question = {
-        type: 'choice',
-        instructions:
-            'Pick the option that keeps you alive and gets you level with the hole. Never pick an option that says CRASH. ' +
-            'If the hole is above you, pick an option that climbs; if it is below you, let yourself fall. ' +
-            'Being too low is worse than being too high because you keep falling. Each option says exactly where you end up.',
-        criteria: {
-            no_flap: 'Do nothing and fall.',
-            flap_now: 'One flap right now.',
-            flap_at_8: 'One flap a little later.',
-            flap_at_16: 'One flap late in the step.',
-            double_flap: 'Two flaps: climb.',
-            triple_flap: 'Three flaps: climb fast.'
+    // v3: pure sensor mode. Jev is a System One model; it perceives short concrete
+    // descriptions and judges them. Nothing about option outcomes reaches the model -
+    // no "Safe", no "CRASH", no bucketed offsets. Code composes the plan afterwards.
+    const questions = {
+        danger: {
+            type: 'noul',
+            instructions: 'Will you hit the bottom pipe or the ground within the next half second unless you flap?'
+        },
+        climb: {
+            type: 'choice',
+            instructions:
+                'How much height do you need to gain in the next 0.4 seconds? Choose by where the hole is and how you are moving. ' +
+                'If the hole is below you or you are rising above it, do not flap. Being too low is worse than being too high because you keep falling.',
+            criteria: {
+                none: 'No flap. You keep falling (or keep rising if you were rising).',
+                one_flap: 'One flap. A small push: roughly holds your height over the step.',
+                two_flaps: 'Two flaps. A steady climb of about 60 px.',
+                three_flaps: 'Three flaps. The fastest climb, about 100 px.'
+            }
+        },
+        timing: {
+            type: 'choice',
+            instructions:
+                'If you flap only once in the next 0.4 seconds, when should it be? Flap sooner when you are falling fast or the pipe is close; later when you have room.',
+            criteria: {
+                now: 'Flap immediately.',
+                soon: 'Wait a moment (about 0.13 s), then flap.',
+                late: 'Wait longer (about 0.27 s), then flap.'
+            }
         }
     };
 
-    const CRASH_NAMES = { 'top pipe': 'the top pipe', 'bottom pipe': 'the bottom pipe', ground: 'the ground' };
+    const TIMING_TO_PLAN = { now: 'flap_now', soon: 'flap_at_8', late: 'flap_at_16' };
+
+    // Code composes the plan; danger is not used for control in pure mode, only shown
+    // in the console and logged.
+    function composePlan(answers) {
+        const climb = answers.climb.choice;
+        if (climb === 'none') return 'no_flap';
+        if (climb === 'two_flaps') return 'double_flap';
+        if (climb === 'three_flaps') return 'triple_flap';
+        if (climb === 'one_flap') return TIMING_TO_PLAN[answers.timing.choice] || 'flap_now';
+        return 'no_flap';
+    }
 
     function px(n) { return `${Math.round(Math.abs(n))} px`; }
-
-    function describeOffset(offset) {
-        const a = Math.abs(offset);
-        if (a < 10) return 'level with the hole';
-        const side = offset > 0 ? 'too low' : 'too high';
-        if (a < 30) return `slightly ${side}`;
-        if (a < 80) return `${side} by ${px(offset)}`;
-        return `far ${side} by ${px(offset)}`;
-    }
-
-    function describeOption(f) {
-        if (f.collisionWithinWindow) return `CRASH into ${CRASH_NAMES[f.collisionWithinWindow.with]}.`;
-        const after = f.collisionIfCoastingAfter
-            ? `, then crashes into ${CRASH_NAMES[f.collisionIfCoastingAfter.with]} if nothing more is done`
-            : '';
-        return `Safe: ${describeOffset(f.offsetFromGapCenterAtEnd)}${after}.`;
-    }
 
     // Three rays from the bird toward the next pipe: straight ahead, ahead-and-up (45 deg),
     // ahead-and-down (45 deg). Each reports the first thing it touches.
@@ -65,71 +72,95 @@
         return 'nothing yet (pipe is far)';
     }
 
-    function describeNow(state) {
+    function motionWord(velocity) {
+        return velocity < -0.5 ? 'rising' : velocity > 0.5 ? 'falling' : 'level';
+    }
+
+    function describeHole(diff) {
+        if (Math.abs(diff) < 10) return 'straight ahead at your height';
+        return `${diff > 0 ? 'ABOVE' : 'BELOW'} you by ${px(diff)}`;
+    }
+
+    function describePipe(state) {
+        const bird = state.bird;
+        const pipe = state.pipes[0];
+        const distance = pipe.left - bird.x - bird.radius;
+        if (distance <= 0) return 'you are inside the pipe right now';
+        const secs = Math.round(distance / state.physics.pipeSpeed / 60 * 10) / 10;
+        if (secs > 1) return `far (about ${secs} s away)`;
+        if (secs > 0.4) return `close (about ${secs} s away)`;
+        return `right ahead (about ${secs} s away)`;
+    }
+
+    function describeNextHole(gapCenter, nextPipe) {
+        const c2 = (nextPipe.gapTop + nextPipe.gapBottom) / 2;
+        const d = c2 - gapCenter;
+        if (Math.abs(d) < 10) return 'at the same height';
+        return `${px(d)} ${d > 0 ? 'lower' : 'higher'} than this one`;
+    }
+
+    // Perception only: where the hole is, how the bird is moving, how far the pipe is
+    // and what three rays touch. No option outcomes, no tick jargon.
+    function buildSensorState(state) {
         const bird = state.bird;
         const pipe = state.pipes[0];
         const gapCenter = (pipe.gapTop + pipe.gapBottom) / 2;
         const diff = bird.y - gapCenter;
-        const motion = bird.velocity < -0.5 ? 'rising' : bird.velocity > 0.5 ? 'falling' : 'level';
-        const hole = Math.abs(diff) < 10 ? 'The hole is straight ahead at your height.'
-            : `The hole is ${diff > 0 ? 'ABOVE' : 'BELOW'} you by ${px(diff)}.`;
-        const distance = pipe.left - bird.x - bird.radius;
-        let pipeText;
-        if (distance <= 0) pipeText = 'You are inside the pipe right now.';
-        else {
-            const secs = Math.round(distance / state.physics.pipeSpeed / 60 * 10) / 10;
-            pipeText = secs > 1 ? `The pipe is far (about ${secs} s away).`
-                : secs > 0.4 ? `The pipe is close (about ${secs} s away).`
-                : `The pipe is right ahead (about ${secs} s away).`;
-        }
-        let following = '';
-        if (state.pipes[1]) {
-            const c2 = (state.pipes[1].gapTop + state.pipes[1].gapBottom) / 2;
-            const d = c2 - gapCenter;
-            following = Math.abs(d) < 10 ? ' The hole after that is at the same height.'
-                : ` The hole after that is ${px(d)} ${d > 0 ? 'lower' : 'higher'}.`;
-        }
-        return `You are ${motion}. ${hole} ${pipeText}${following}`;
-    }
-
-    function buildJevState(state) {
-        const forecasts = physics.forecastPlans(state);
-        const options = {};
-        for (const plan of PLANS) options[plan] = describeOption(forecasts[plan]);
-        return {
-            game: 'You are the bird in Flappy Bird. Fly through the hole between the top pipe and the bottom pipe. Touching a pipe or the ground kills you.',
-            now: describeNow(state),
+        const sensorState = {
+            game: 'You are the bird in Flappy Bird. Fly through the hole between the top pipe and the bottom pipe. Touching a pipe or the ground kills you. You fall all the time; a flap gives one push upward.',
+            you: motionWord(bird.velocity),
+            hole: describeHole(diff),
+            pipe: describePipe(state),
             rays: {
                 'straight ahead': castRay(state, 0),
                 'ahead and up': castRay(state, -1),
                 'ahead and down': castRay(state, 1)
-            },
-            options
+            }
         };
+        if (state.pipes[1]) sensorState.next_hole = describeNextHole(gapCenter, state.pipes[1]);
+        return sensorState;
     }
 
     function buildRequest(state, model = 'jev-latest') {
-        return { model, state: buildJevState(state), questions: { plan: question } };
+        return { model, state: buildSensorState(state), questions };
     }
 
-    function parseResponse(data) {
-        const answer = data?.answers?.plan;
-        const isProbability = v => Number.isFinite(v) && v >= 0 && v <= 1;
-        if (!answer || answer.type !== 'choice' || !PLANS.includes(answer.choice) ||
-            !isProbability(answer.confidence) || !answer.probabilities || typeof answer.probabilities !== 'object') {
+    function isProbability(v) { return Number.isFinite(v) && v >= 0 && v <= 1; }
+
+    function validateChoiceAnswer(answer, keys) {
+        if (!answer || answer.type !== 'choice' || !keys.includes(answer.choice) ||
+            !answer.probabilities || typeof answer.probabilities !== 'object' ||
+            !isProbability(answer.confidence)) {
             throw new Error('Invalid Jev response');
         }
         let sum = 0;
-        for (const plan of PLANS) {
-            const value = answer.probabilities[plan];
+        const probabilities = {};
+        for (const key of keys) {
+            const value = answer.probabilities[key];
             if (!isProbability(value)) throw new Error('Invalid Jev response');
+            probabilities[key] = value;
             sum += value;
         }
         if (Math.abs(sum - 1) > 0.02) throw new Error('Invalid Jev response');
+        return { choice: answer.choice, probabilities, confidence: answer.confidence };
+    }
+
+    function parseResponse(data) {
+        const rawAnswers = data && data.answers;
+        if (!rawAnswers || typeof rawAnswers !== 'object') throw new Error('Invalid Jev response');
+
+        const dangerAnswer = rawAnswers.danger;
+        if (!dangerAnswer || dangerAnswer.type !== 'noul' || !isProbability(dangerAnswer.noul)) {
+            throw new Error('Invalid Jev response');
+        }
+
+        const climb = validateChoiceAnswer(rawAnswers.climb, Object.keys(questions.climb.criteria));
+        const timing = validateChoiceAnswer(rawAnswers.timing, Object.keys(questions.timing.criteria));
+
+        const answers = { danger: { noul: dangerAnswer.noul }, climb, timing };
         return {
-            plan: answer.choice,
-            probabilities: answer.probabilities,
-            confidence: answer.confidence,
+            answers,
+            plan: composePlan(answers),
             model: data.model,
             usage: data.usage && Number.isFinite(data.usage.input_tokens) && Number.isFinite(data.usage.output_tokens)
                 ? { input_tokens: data.usage.input_tokens, output_tokens: data.usage.output_tokens }
@@ -137,7 +168,7 @@
         };
     }
 
-    const api = { PLANS, buildRequest, parseResponse };
+    const api = { PLANS, questions, buildRequest, parseResponse, composePlan };
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
     else root.JevContract = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

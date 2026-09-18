@@ -303,3 +303,126 @@ scenesystem, main-menu-scene, play-scene, train-scene, `data/jev-physics.js`,
 late fallback, no safety override), cost/rate numbers from the TypeSafe models page
 ($0.042 per 1M input tokens, 1,200 req/min, ~100 ms typical), why there is no WebSocket
 (TypeSafe offers HTTP only; we use keep-alive + pipelining), Docker, tests.
+
+---
+
+# v3: pure sensor mode + judgment console
+
+## Why
+
+In v2 the state told Jev where every option ends up ("Safe: level with the hole"). Code had
+already solved the problem; Jev only read the answer. v3 gives Jev **perception only** and
+lets it judge. Physics stays in code for the LATE fallback, the canvas overlay and the
+"code would pick" comparison, but **nothing about option outcomes reaches the model**.
+
+## Request (sensor state, ~200 tokens)
+
+```json
+{
+  "game": "You are the bird in Flappy Bird. Fly through the hole between the top pipe and the bottom pipe. Touching a pipe or the ground kills you. You fall all the time; a flap gives one push upward.",
+  "you": "falling",
+  "hole": "ABOVE you by 98 px",
+  "pipe": "far (about 1.5 s away)",
+  "rays": { "straight ahead": "the bottom pipe", "ahead and up": "the top pipe", "ahead and down": "the ground" },
+  "next_hole": "140 px lower than this one"
+}
+```
+
+- `you`: `rising` | `falling` | `level` (velocity thresholds ±0.5).
+- `hole`: `ABOVE you by N px` | `BELOW you by N px` | `straight ahead at your height` (<10 px).
+- `pipe`: `far (about S s away)` (>1 s) | `close (about S s away)` (>0.4 s) | `right ahead (about S s away)` | `you are inside the pipe right now`.
+- `rays`: same three rays as v2 (straight, 45° up, 45° down): first thing touched.
+- `next_hole`: present only when a second pipe exists: `N px lower/higher than this one` | `at the same height`.
+
+## Questions (all in one request; they run in parallel)
+
+```js
+questions: {
+  danger: { type: 'noul',
+    instructions: 'Will you hit the bottom pipe or the ground within the next half second unless you flap?' },
+  climb: { type: 'choice',
+    instructions: 'How much height do you need to gain in the next 0.4 seconds? Choose by where the hole is and how you are moving. ' +
+                  'If the hole is below you or you are rising above it, do not flap. Being too low is worse than being too high because you keep falling.',
+    criteria: {
+      none:        'No flap. You keep falling (or keep rising if you were rising).',
+      one_flap:    'One flap. A small push: roughly holds your height over the step.',
+      two_flaps:   'Two flaps. A steady climb of about 60 px.',
+      three_flaps: 'Three flaps. The fastest climb, about 100 px.'
+    } },
+  timing: { type: 'choice',
+    instructions: 'If you flap only once in the next 0.4 seconds, when should it be? Flap sooner when you are falling fast or the pipe is close; later when you have room.',
+    criteria: {
+      now:   'Flap immediately.',
+      soon:  'Wait a moment (about 0.13 s), then flap.',
+      late:  'Wait longer (about 0.27 s), then flap.'
+    } }
+}
+```
+
+Criteria describe **controls** (what a flap does in general), never this situation's outcome.
+
+## Composition (code, `JevContract.composePlan(answers)`)
+
+| climb | timing | plan |
+| --- | --- | --- |
+| none | – | `no_flap` |
+| one_flap | now / soon / late | `flap_now` / `flap_at_8` / `flap_at_16` |
+| two_flaps | – | `double_flap` |
+| three_flaps | – | `triple_flap` |
+
+`danger` is not used for control in pure mode; it is shown in the console and logged.
+
+## API changes
+
+- `JevContract.buildRequest(state, model)` builds the sensor state and the three questions.
+- `JevContract.parseResponse(json)` → `{ answers: { danger: { noul }, climb: { choice, probabilities, confidence }, timing: { choice, probabilities, confidence } }, plan, model, usage }` where `plan = composePlan(answers)`. Throws `Invalid Jev response` on schema problems.
+- Server response: `{ id, plan, answers, model, usage, latencyMs }` (drop top-level `probabilities`/`confidence`).
+- Scene: uses `plan` exactly as before; stores `answers` on the decision record for the console. LATE fallback and physics overlay unchanged.
+
+## Console UI (replaces `JevPanel`; file `data/jev-console.js`, class `JevConsole`)
+
+Look: the TypeSafe Doom demo. Near-black background (`#050a06`), phosphor green
+(`#39ff8a`, dim `#1f7a45`, text `#b8ffd4`), thin 1 px green borders, monospace
+(`Consolas, "SF Mono", Menlo, monospace`), uppercase small-caps section labels, no images,
+no external fonts. Amber (`#ffb347`) only for LATE/fallback, red (`#ff5c5c`) for CRASH/death.
+
+Layout (CSS grid on `body.jev-console-open`, full viewport, page scrolls if needed):
+
+```
+┌──────────────────────────────┬──────────────────────────────────┐
+│  GAME (canvas, framed)        │  ORDERS   key · Start/Pause · Menu · cap · auto │
+│  portrait, scaled to fit      │  DIRECTOR  req 495 · late 3% · lat 280 ms · $0.0012 │
+│                               │  JUDGMENTS                        │
+│                               │   DANGER  noul bar 0.82           │
+│                               │   CLIMB   4 bars + conf           │
+│                               │   TIMING  3 bars + conf           │
+│                               │  SITUATION REPORT (sensor state as sent) │
+├──────────────────────────────┴──────────────────────────────────┤
+│  STATUS LINE: "GOAL: TWO FLAPS · CLIMB 0.61 · DANGER 0.82 · #17 LATE?"          │
+├──────────────────────────────────────────────────────────────────┤
+│  GRAPH (inline SVG, full width, ~300 px tall)                    │
+│  sensors → state → questions → options → compose → plan → flaps → bird │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+- The p5 canvas element is moved into the GAME frame and CSS-scaled (`width:100%;
+  height:auto; max-height: 100%`) without `resizeCanvas`; restored to `document.body` with
+  its original inline style on `exit()`.
+- JUDGMENTS: each card shows the question id in a green tag, the instructions text in dim
+  green, one bar per option (chosen option bright with its label bright, others dim), the
+  probability at the right, `conf 0.47` under the bars. `danger` shows a single bar for the
+  yes-probability and the word YES/NO.
+- GRAPH: inline SVG drawn once, updated per decision. Columns left→right: 6 sensor nodes
+  (`you`, `hole`, `pipe`, `ray ↑`, `ray →`, `ray ↓`) → `state` → 3 question nodes → their
+  option nodes (4 + 3 + yes/no) → `compose` → `plan` node (text = chosen plan) → 3 `flap @0 / @8 / @16`
+  nodes → `bird`. Edges from a question to its options have stroke width proportional to
+  probability and opacity = probability; the chosen path (state → climb → chosen option →
+  compose → plan → active flap nodes → bird) glows bright; unused nodes dim. LATE windows
+  draw the path amber from `compose` on. Node labels show live values (e.g. `hole: ABOVE 98`).
+- Collapsible `<details>` for raw request/response JSON and a 10-entry history list.
+
+Tests: `test/contract.test.js` (sensor state has no outcome words: assert no `Safe`,
+`CRASH`, `level with`, `too low`, `too high`; composePlan table; parseResponse schema),
+`test/server.test.js` (answers forwarded), `test/watch.test.js` (decision record carries
+`answers`). No DOM tests for the console; it must not throw when constructed with the vm
+harness's stub `document` (the scene builds it only in `start()`).
