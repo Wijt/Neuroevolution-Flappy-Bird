@@ -1,10 +1,12 @@
 // Pure, deterministic short-horizon physics shared by the server and the browser scene.
 // No p5 globals: everything needed comes from the GameState argument.
 (function (root) {
-    const HORIZON = 12;
+    // 24 ticks = 400 ms at 60 Hz. Measured Jev round trip through the proxy is ~250-300 ms,
+    // so a 400 ms window lets the pipelined answer arrive in time almost always.
+    const HORIZON = 24;
     const LOOKAHEAD = 36;
-    const PLANS = ['flap_now', 'flap_at_4', 'flap_at_8', 'no_flap'];
-    const FLAP_TICK = { flap_now: 0, flap_at_4: 4, flap_at_8: 8, no_flap: null };
+    const FLAP_TICK = { flap_now: 0, flap_at_8: 8, flap_at_16: 16, no_flap: null };
+    const PLANS = Object.keys(FLAP_TICK);
 
     function clamp(v, min, max) { return Math.min(Math.max(v, min), max); }
 

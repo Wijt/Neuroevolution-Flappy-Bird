@@ -135,9 +135,9 @@ test('advance() matches stepping the real Bird + Pipe classes HORIZON times', ()
         pipes: pipeList.map(p => ({ left: p.topPipe.x1, right: p.topPipe.x2, gapTop: p.topPipe.y2, gapBottom: p.bottomPipe.y1 }))
     };
 
-    const advanced = JevPhysics.advance(state, 'flap_at_4');
+    const advanced = JevPhysics.advance(state, 'flap_at_8');
     for (let t = 0; t < JevPhysics.HORIZON; t++) {
-        if (t === 4) realBird.jump();
+        if (t === JevPhysics.FLAP_TICK.flap_at_8) realBird.jump();
         realBird.update();
         pipeList.forEach(p => p.update());
     }
@@ -185,29 +185,29 @@ test('forecastPlans returns a PlanOutcome per plan with the documented shape', (
 test('bestPlan excludes plans fatal within the window', () => {
     const forecasts = {
         flap_now: { collisionWithinWindow: { tick: 3, with: 'ground' }, collisionIfCoastingAfter: null, offsetFromGapCenterAtEnd: 0 },
-        flap_at_4: { collisionWithinWindow: null, collisionIfCoastingAfter: null, offsetFromGapCenterAtEnd: 5 },
-        flap_at_8: { collisionWithinWindow: null, collisionIfCoastingAfter: { tick: 20, with: 'top pipe' }, offsetFromGapCenterAtEnd: 1 },
+        flap_at_8: { collisionWithinWindow: null, collisionIfCoastingAfter: null, offsetFromGapCenterAtEnd: 5 },
+        flap_at_16: { collisionWithinWindow: null, collisionIfCoastingAfter: { tick: 20, with: 'top pipe' }, offsetFromGapCenterAtEnd: 1 },
         no_flap: { collisionWithinWindow: { tick: 9, with: 'ground' }, collisionIfCoastingAfter: null, offsetFromGapCenterAtEnd: 0 }
     };
-    assert.equal(JevPhysics.bestPlan(forecasts), 'flap_at_4');
+    assert.equal(JevPhysics.bestPlan(forecasts), 'flap_at_8');
 });
 
 test('bestPlan prefers no coasting collision, then smallest offset', () => {
     const forecasts = {
         flap_now: { collisionWithinWindow: null, collisionIfCoastingAfter: null, offsetFromGapCenterAtEnd: -10 },
-        flap_at_4: { collisionWithinWindow: null, collisionIfCoastingAfter: null, offsetFromGapCenterAtEnd: 2 },
-        flap_at_8: { collisionWithinWindow: null, collisionIfCoastingAfter: { tick: 15, with: 'ground' }, offsetFromGapCenterAtEnd: 0 },
+        flap_at_8: { collisionWithinWindow: null, collisionIfCoastingAfter: null, offsetFromGapCenterAtEnd: 2 },
+        flap_at_16: { collisionWithinWindow: null, collisionIfCoastingAfter: { tick: 15, with: 'ground' }, offsetFromGapCenterAtEnd: 0 },
         no_flap: { collisionWithinWindow: null, collisionIfCoastingAfter: null, offsetFromGapCenterAtEnd: 3 }
     };
-    assert.equal(JevPhysics.bestPlan(forecasts), 'flap_at_4');
+    assert.equal(JevPhysics.bestPlan(forecasts), 'flap_at_8');
 });
 
 test('bestPlan picks the latest collision tick when every plan is fatal', () => {
     const forecasts = {
         flap_now: { collisionWithinWindow: { tick: 2, with: 'ground' } },
-        flap_at_4: { collisionWithinWindow: { tick: 11, with: 'ground' } },
-        flap_at_8: { collisionWithinWindow: { tick: 5, with: 'top pipe' } },
+        flap_at_8: { collisionWithinWindow: { tick: 11, with: 'ground' } },
+        flap_at_16: { collisionWithinWindow: { tick: 5, with: 'top pipe' } },
         no_flap: { collisionWithinWindow: { tick: 3, with: 'ground' } }
     };
-    assert.equal(JevPhysics.bestPlan(forecasts), 'flap_at_4');
+    assert.equal(JevPhysics.bestPlan(forecasts), 'flap_at_8');
 });

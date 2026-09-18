@@ -67,13 +67,13 @@ function sceneHarness(fetchImpl) {
     };
 }
 
-const HORIZON = 12;
+const HORIZON = 24;
 
 function answer(plan, overrides) {
     return Object.assign({
         id: 0,
         plan,
-        probabilities: { flap_now: 0.1, flap_at_4: 0.1, flap_at_8: 0.1, no_flap: 0.7, [plan]: 0.7 },
+        probabilities: { flap_now: 0.1, flap_at_8: 0.1, flap_at_16: 0.1, no_flap: 0.7, [plan]: 0.7 },
         confidence: 0.9,
         model: 'jev-latest',
         usage: { input_tokens: 500, output_tokens: 20 },
@@ -116,11 +116,11 @@ test('start primes window 0 and waits for it briefly, then applies it without a 
     const y = scene.bird.pos.y;
     for (let i = 0; i < 10; i++) tick();           // ~170 ms: still inside the warm-up hold
     assert.equal(scene.bird.pos.y, y);
-    resolve(jsonResponse(200, answer('flap_at_4', { id: 0 })));
+    resolve(jsonResponse(200, answer('flap_at_8', { id: 0 })));
     await new Promise(r => setImmediate(r));
     await new Promise(r => setImmediate(r));
     tick();
-    assert.equal(scene.currentPlan, 'flap_at_4');
+    assert.equal(scene.currentPlan, 'flap_at_8');
     assert.equal(scene.lateCount, 0);
     assert.equal(scene.requestsSent, 2);            // window 1 was pipelined at commit
 });
@@ -157,11 +157,11 @@ test('a resolved answer for the current window is applied, not late', () => {
     const { scene, tick } = sceneHarness(() => new Promise(() => {}));
     scene.state = 'running';
     scene.pendingResponses[0] = {
-        status: 'resolved', plan: 'flap_at_4', probabilities: { flap_now: 0, flap_at_4: 0.8, flap_at_8: 0.1, no_flap: 0.1 },
+        status: 'resolved', plan: 'flap_at_8', probabilities: { flap_now: 0, flap_at_8: 0.8, flap_at_16: 0.1, no_flap: 0.1 },
         confidence: 0.8, latencyMs: 55, usage: { input_tokens: 400, output_tokens: 10 }
     };
     tick();
-    assert.equal(scene.currentPlan, 'flap_at_4');
+    assert.equal(scene.currentPlan, 'flap_at_8');
     assert.equal(scene.lateCount, 0);
     assert.equal(scene.history[0].late, false);
 });
@@ -212,14 +212,14 @@ test('flap fires at the plan\'s tick', () => {
     const { scene, tick } = sceneHarness(() => new Promise(() => {}));
     scene.state = 'running';
     scene.pendingResponses[0] = {
-        status: 'resolved', plan: 'flap_at_4', probabilities: { flap_now: 0, flap_at_4: 1, flap_at_8: 0, no_flap: 0 },
+        status: 'resolved', plan: 'flap_at_8', probabilities: { flap_now: 0, flap_at_8: 1, flap_at_16: 0, no_flap: 0 },
         confidence: 1, latencyMs: 10, usage: null
     };
-    // Ticks 0..3: no flap yet, bird keeps falling under gravity from velocity 0.
-    for (let i = 0; i < 4; i++) tick();
+    // Ticks 0..7: no flap yet, bird keeps falling under gravity from velocity 0.
+    for (let i = 0; i < 8; i++) tick();
     assert.ok(scene.bird.velocity > 0, 'bird should be falling before the flap tick');
-    // Tick index 4 (the 5th tick of the window) is when flap_at_4 fires: jump() sets
-    // velocity to -6, then the same tick's physics step applies one tick of gravity.
+    // Tick index 8 is when flap_at_8 fires: jump() sets velocity to -6, then the same
+    // tick's physics step applies one tick of gravity.
     tick();
     assert.equal(scene.bird.velocity, -6 + GRAVITY_FOR_TEST());
     function GRAVITY_FOR_TEST() { return 0.4; }

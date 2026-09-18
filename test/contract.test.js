@@ -69,7 +69,7 @@ function validAnswer(overrides = {}) {
             plan: {
                 type: 'choice',
                 choice: 'flap_now',
-                probabilities: { flap_now: 0.7, flap_at_4: 0.1, flap_at_8: 0.1, no_flap: 0.1 },
+                probabilities: { flap_now: 0.7, flap_at_8: 0.1, flap_at_16: 0.1, no_flap: 0.1 },
                 confidence: 0.85,
                 ...overrides
             }
@@ -81,7 +81,7 @@ test('parseResponse accepts a valid answer', () => {
     const result = JevContract.parseResponse(validAnswer());
     assert.equal(result.plan, 'flap_now');
     assert.equal(result.confidence, 0.85);
-    assert.deepEqual(result.probabilities, { flap_now: 0.7, flap_at_4: 0.1, flap_at_8: 0.1, no_flap: 0.1 });
+    assert.deepEqual(result.probabilities, { flap_now: 0.7, flap_at_8: 0.1, flap_at_16: 0.1, no_flap: 0.1 });
     assert.equal(result.model, 'jev-latest');
     assert.deepEqual(result.usage, { input_tokens: 500, output_tokens: 10 });
 });
@@ -99,7 +99,7 @@ test('parseResponse rejects a plan not in PLANS', () => {
 
 test('parseResponse rejects missing or out-of-range probabilities', () => {
     const data = validAnswer();
-    data.answers.plan.probabilities = { flap_now: 0.7, flap_at_4: 0.1, flap_at_8: 0.1 };
+    data.answers.plan.probabilities = { flap_now: 0.7, flap_at_8: 0.1, flap_at_16: 0.1 };
     assert.throws(() => JevContract.parseResponse(data), /Invalid Jev response/);
     const data2 = validAnswer();
     data2.answers.plan.probabilities.flap_now = 1.5;
@@ -108,13 +108,13 @@ test('parseResponse rejects missing or out-of-range probabilities', () => {
 
 test('parseResponse rejects probabilities that do not sum to ~1', () => {
     const data = validAnswer();
-    data.answers.plan.probabilities = { flap_now: 0.5, flap_at_4: 0.5, flap_at_8: 0.5, no_flap: 0.5 };
+    data.answers.plan.probabilities = { flap_now: 0.5, flap_at_8: 0.5, flap_at_16: 0.5, no_flap: 0.5 };
     assert.throws(() => JevContract.parseResponse(data), /Invalid Jev response/);
 });
 
 test('parseResponse tolerates a small rounding slack in probabilities', () => {
     const data = validAnswer();
-    data.answers.plan.probabilities = { flap_now: 0.71, flap_at_4: 0.1, flap_at_8: 0.1, no_flap: 0.1 };
+    data.answers.plan.probabilities = { flap_now: 0.71, flap_at_8: 0.1, flap_at_16: 0.1, no_flap: 0.1 };
     assert.doesNotThrow(() => JevContract.parseResponse(data));
 });
 

@@ -15,7 +15,7 @@ const answer = plan => ({
     answers: {
         plan: {
             type: 'choice', choice: plan, confidence: 0.8,
-            probabilities: { flap_now: 0.7, flap_at_4: 0.1, flap_at_8: 0.1, no_flap: 0.1 }
+            probabilities: { flap_now: 0.7, flap_at_8: 0.1, flap_at_16: 0.1, no_flap: 0.1 }
         }
     }
 });

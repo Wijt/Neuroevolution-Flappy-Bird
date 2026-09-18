@@ -11,12 +11,8 @@
         return node;
     }
 
-    const PLAN_LABELS = {
-        flap_now: 'flap_now',
-        flap_at_4: 'flap_at_4',
-        flap_at_8: 'flap_at_8',
-        no_flap: 'no_flap'
-    };
+    const PLANS = (root.JevPhysics && root.JevPhysics.PLANS) || ['flap_now', 'flap_at_8', 'flap_at_16', 'no_flap'];
+    const PLAN_LABELS = Object.fromEntries(PLANS.map(p => [p, p]));
 
     class JevPanel {
         constructor(callbacks) {
@@ -90,8 +86,7 @@
             s.appendChild(this.planNameEl);
 
             this.barRows = {};
-            const plans = ['flap_now', 'flap_at_4', 'flap_at_8', 'no_flap'];
-            plans.forEach(plan => {
+            PLANS.forEach(plan => {
                 const row = el('div', { className: 'jev-bar-row' });
                 const label = el('span', { className: 'jev-bar-label', text: PLAN_LABELS[plan] });
                 const track = el('span', { className: 'jev-bar-track' });

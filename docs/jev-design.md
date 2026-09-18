@@ -37,23 +37,28 @@ browser (p5 scene, 60 Hz fixed-step physics, never blocks on network)
 node server.js (same-origin proxy, keep-alive to TypeSafe, key never logged)
    │  POST https://api.typesafe.ai/v1/systemone   Authorization: Bearer <key>
    ▼
-Jev (one Choice question: which 12-tick plan)
+Jev (one Choice question: which 24-tick plan)
 ```
 
 ### Real-time pipelined decision loop
 
 - Physics runs at a fixed 60 Hz regardless of network. **The game never pauses for Jev.**
-- Time is divided into **decision windows of `HORIZON = 12` ticks (200 ms).**
-- A **plan** covers one window. Plans: `flap_now` (flap at tick 0), `flap_at_4`,
-  `flap_at_8`, `no_flap`. Exactly one flap or none per window.
+- Time is divided into **decision windows of `HORIZON = 24` ticks (400 ms)**. Measured Jev
+  round trip through the proxy is 250–300 ms; a 200 ms window made almost every answer late.
+- A **plan** covers one window. Plans: `flap_now` (flap at tick 0), `flap_at_8`,
+  `flap_at_16`, `no_flap`. Exactly one flap or none per window.
 - **Pipelining:** the moment plan *k* is committed for window *k*, the client computes
   the exact game state at the start of window *k+1* (physics is deterministic; pipes
   scroll at constant speed) using `JevPhysics.advance(state, plan)`, and immediately sends
-  the request for window *k+1*. Jev has a full 200 ms to answer.
-- When window *k+1* starts: if the answer arrived, apply it. If not, use `no_flap` for
-  that window, mark the decision as **late** in the UI, and discard the answer when it
-  arrives. No safety override. What Jev picks is what the bird does.
-- Request rate ≈ 5/s (300/min) while alive. Configurable via `HORIZON`.
+  the request for window *k+1*. Jev has a full 400 ms to answer.
+- When window *k+1* starts: if the answer arrived, apply it. If not, use the physics
+  heuristic (`bestPlan`) for that window only, mark the decision as **LATE** in the UI, and
+  discard the answer when it arrives. No override of an answer that did arrive: what Jev
+  picks is what the bird does.
+- Window 0 has nothing to pipeline from: Start sends request 0 immediately and holds the
+  first tick for at most 600 ms until it arrives (`WatchScene.WARMUP_MS`).
+- Pausing does not abort the in-flight request (already paid for); it is reused on resume.
+- Request rate ≈ 2.5/s (150/min) while alive, ~1,350 input tokens per request. Configurable via `HORIZON`.
 - **No requests when:** bird dead, game paused, not started, tab hidden
   (`document.hidden`), or an error is showing. On death: cancel in-flight request, show
   Game over + score, "Play again" button. Optional "Auto restart" checkbox (default off)
@@ -81,9 +86,9 @@ All three browser modules are UMD-style: `module.exports` under Node, else a glo
 ### `data/jev-physics.js` → global `JevPhysics`
 
 ```js
-JevPhysics.HORIZON            // 12
-JevPhysics.PLANS              // ['flap_now','flap_at_4','flap_at_8','no_flap']
-JevPhysics.FLAP_TICK          // { flap_now:0, flap_at_4:4, flap_at_8:8, no_flap:null }
+JevPhysics.HORIZON            // 24
+JevPhysics.PLANS              // ['flap_now','flap_at_8','flap_at_16','no_flap']
+JevPhysics.FLAP_TICK          // { flap_now:0, flap_at_8:8, flap_at_16:16, no_flap:null }
 JevPhysics.LOOKAHEAD          // 36  (extra ticks simulated after the window, coasting)
 
 // GameState (plain JSON, produced by the scene, sent to the server):
@@ -100,9 +105,9 @@ JevPhysics.simulate(state, flapTicks /* number[] */, ticks /* number */)
 //     passedGap: boolean /* bird.x passed pipes[0].right without collision */ }
 
 JevPhysics.forecastPlans(state)
-// → { flap_now: PlanOutcome, flap_at_4: ..., flap_at_8: ..., no_flap: ... }
+// → { flap_now: PlanOutcome, flap_at_8: ..., flap_at_16: ..., no_flap: ... }
 // PlanOutcome = {
-//   flapAtTick: 0|4|8|null,
+//   flapAtTick: 0|8|16|null,
 //   endY, endVelocity,                       // after HORIZON ticks
 //   offsetFromGapCenterAtEnd,                // endY - gapCenter (positive = below centre)
 //   minClearance,                            // min distance (px) between bird edge and any
@@ -146,12 +151,12 @@ to 1 decimal, no raw trajectories (too many tokens):
   "nextGap": { "top": 160, "bottom": 285, "center": 222.5, "pipeLeftEdgeDistance": 88, "ticksUntilPipe": 44,
                "birdRelativeToCenter": "12.1 px below centre" },
   "followingGap": { "center": 300.5, "pipeLeftEdgeDistance": 338 } ,
-  "windowTicks": 12,
+  "windowTicks": 24,
   "plans": {
     "flap_now":  { "flapAtTick": 0, "endY": 180.2, "endVelocity": -1.2, "offsetFromGapCenterAtEnd": -42.3,
                    "minClearancePx": 31.0, "collisionWithinWindow": "none",
                    "ifCoastingAfterWindow": { "collision": "top pipe at tick 21", "passesGap": false } },
-    "flap_at_4": { ... }, "flap_at_8": { ... },
+    "flap_at_8": { ... }, "flap_at_16": { ... },
     "no_flap":   { "flapAtTick": null, ... "collisionWithinWindow": "ground at tick 9", ... }
   }
 }
@@ -163,16 +168,16 @@ Question (`questions.plan`):
 {
   type: 'choice',
   instructions:
-    'Pick the plan for the next 12 ticks that keeps the bird alive and lines it up with the centre of `nextGap`. ' +
+    'Pick the plan for the next 24 ticks that keeps the bird alive and lines it up with the centre of `nextGap`. ' +
     'Use `plans`: each plan is simulated exactly. Any plan whose `collisionWithinWindow` is not "none" is fatal and must not be chosen. ' +
     'Among safe plans, prefer one whose `ifCoastingAfterWindow.collision` is "none" or latest, and whose `offsetFromGapCenterAtEnd` is closest to 0 ' +
-    '(negative = above centre, positive = below). A new plan is chosen every 12 ticks, so a distant coasting collision can still be avoided later; ' +
+    '(negative = above centre, positive = below). A new plan is chosen every 24 ticks, so a distant coasting collision can still be avoided later; ' +
     'do not flap when already above centre and rising.',
   criteria: {
     flap_now:  { what: 'Flap immediately (tick 0), then coast for the rest of the window.', outcome: 'see `plans.flap_now`' },
-    flap_at_4: { what: 'Coast 4 ticks, flap at tick 4, then coast.',                        outcome: 'see `plans.flap_at_4`' },
     flap_at_8: { what: 'Coast 8 ticks, flap at tick 8, then coast.',                        outcome: 'see `plans.flap_at_8`' },
-    no_flap:   { what: 'No flap for all 12 ticks; keep falling or keep current momentum.',  outcome: 'see `plans.no_flap`' }
+    flap_at_16: { what: 'Coast 16 ticks, flap at tick 16, then coast.',                        outcome: 'see `plans.flap_at_16`' },
+    no_flap:   { what: 'No flap for all 24 ticks; keep falling or keep current momentum.',  outcome: 'see `plans.no_flap`' }
   }
 }
 ```
@@ -253,7 +258,7 @@ by half the panel width via a body class, on narrow screens stack). Sections:
    Start / Pause / Play again button, Menu button, Auto-restart checkbox, request cap
    input, status line (`role=status`).
 2. **Jev decision**: current window plan name big, 4 horizontal probability bars
-   (`flap_now, flap_at_4, flap_at_8, no_flap`) from the latest response, confidence,
+   (`flap_now, flap_at_8, flap_at_16, no_flap`) from the latest response, confidence,
    latency last / avg / p95, badge "LATE" when the window used the fallback.
 3. **Physics comparison**: "physics would pick: X" and running agreement %. Display only.
 4. **Usage**: requests sent, on-time %, tokens in/out (from `usage`), estimated cost
@@ -276,7 +281,7 @@ scenesystem, main-menu-scene, play-scene, train-scene, `data/jev-physics.js`,
 
 - `test/physics.test.js`: simulate matches original Bird/Pipe math tick for tick;
   collisions with top/bottom/ground detected; `advance` equals stepping the real Bird +
-  Pipe classes 12 times; `bestPlan` rules; `forecastPlans` shape.
+  Pipe classes 24 times; `bestPlan` rules; `forecastPlans` shape.
 - `test/contract.test.js`: `buildRequest` shape (question type choice, 4 criteria keys,
   no trajectories in state, numbers rounded), `parseResponse` accepts a valid answer and
   rejects bad ones.

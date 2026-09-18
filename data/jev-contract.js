@@ -2,23 +2,25 @@
 (function (root) {
     const physics = typeof module !== 'undefined' && module.exports ? require('./jev-physics') : root.JevPhysics;
     const PLANS = physics.PLANS;
+    const H = physics.HORIZON;
 
     function round1(n) { return Math.round(n * 10) / 10; }
 
     const question = {
         type: 'choice',
         instructions:
-            'Pick the plan for the next 12 ticks that keeps the bird alive and lines it up with the centre of `nextGap`. ' +
+            `Pick the plan for the next ${H} ticks that keeps the bird alive and lines it up with the centre of \`nextGap\`. ` +
             'Use `plans`: each plan is simulated exactly. Any plan whose `collisionWithinWindow` is not "none" is fatal and must not be chosen. ' +
             'Among safe plans, prefer one whose `ifCoastingAfterWindow.collision` is "none" or latest, and whose `offsetFromGapCenterAtEnd` is closest to 0 ' +
-            '(negative = above centre, positive = below). A new plan is chosen every 12 ticks, so a distant coasting collision can still be avoided later; ' +
+            `(negative = above centre, positive = below). A new plan is chosen every ${H} ticks, so a distant coasting collision can still be avoided later; ` +
             'do not flap when already above centre and rising.',
-        criteria: {
-            flap_now: { what: 'Flap immediately (tick 0), then coast for the rest of the window.', outcome: 'see `plans.flap_now`' },
-            flap_at_4: { what: 'Coast 4 ticks, flap at tick 4, then coast.', outcome: 'see `plans.flap_at_4`' },
-            flap_at_8: { what: 'Coast 8 ticks, flap at tick 8, then coast.', outcome: 'see `plans.flap_at_8`' },
-            no_flap: { what: 'No flap for all 12 ticks; keep falling or keep current momentum.', outcome: 'see `plans.no_flap`' }
-        }
+        criteria: Object.fromEntries(PLANS.map(plan => {
+            const t = physics.FLAP_TICK[plan];
+            const what = t === null ? `No flap for all ${H} ticks; keep falling or keep current momentum.`
+                : t === 0 ? 'Flap immediately (tick 0), then coast for the rest of the window.'
+                : `Coast ${t} ticks, flap at tick ${t}, then coast.`;
+            return [plan, { what, outcome: `see \`plans.${plan}\`` }];
+        }))
     };
 
     function describeCollision(collision) {
