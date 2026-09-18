@@ -73,7 +73,7 @@ function answer(plan, overrides) {
     return Object.assign({
         id: 0,
         plan,
-        probabilities: { flap_now: 0.1, flap_at_8: 0.1, flap_at_16: 0.1, no_flap: 0.7, [plan]: 0.7 },
+        probabilities: { flap_now: 0.1, flap_at_8: 0.1, flap_at_16: 0.1, double_flap: 0, triple_flap: 0, no_flap: 0.7, [plan]: 0.7 },
         confidence: 0.9,
         model: 'jev-latest',
         usage: { input_tokens: 500, output_tokens: 20 },
@@ -157,7 +157,7 @@ test('a resolved answer for the current window is applied, not late', () => {
     const { scene, tick } = sceneHarness(() => new Promise(() => {}));
     scene.state = 'running';
     scene.pendingResponses[0] = {
-        status: 'resolved', plan: 'flap_at_8', probabilities: { flap_now: 0, flap_at_8: 0.8, flap_at_16: 0.1, no_flap: 0.1 },
+        status: 'resolved', plan: 'flap_at_8', probabilities: { flap_now: 0, flap_at_8: 0.8, flap_at_16: 0.1, double_flap: 0, triple_flap: 0, no_flap: 0.1 },
         confidence: 0.8, latencyMs: 55, usage: { input_tokens: 400, output_tokens: 10 }
     };
     tick();
@@ -212,7 +212,7 @@ test('flap fires at the plan\'s tick', () => {
     const { scene, tick } = sceneHarness(() => new Promise(() => {}));
     scene.state = 'running';
     scene.pendingResponses[0] = {
-        status: 'resolved', plan: 'flap_at_8', probabilities: { flap_now: 0, flap_at_8: 1, flap_at_16: 0, no_flap: 0 },
+        status: 'resolved', plan: 'flap_at_8', probabilities: { flap_now: 0, flap_at_8: 1, flap_at_16: 0, double_flap: 0, triple_flap: 0, no_flap: 0 },
         confidence: 1, latencyMs: 10, usage: null
     };
     // Ticks 0..7: no flap yet, bird keeps falling under gravity from velocity 0.

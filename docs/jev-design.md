@@ -45,8 +45,10 @@ Jev (one Choice question: which 24-tick plan)
 - Physics runs at a fixed 60 Hz regardless of network. **The game never pauses for Jev.**
 - Time is divided into **decision windows of `HORIZON = 24` ticks (400 ms)**. Measured Jev
   round trip through the proxy is 250–300 ms; a 200 ms window made almost every answer late.
-- A **plan** covers one window. Plans: `flap_now` (flap at tick 0), `flap_at_8`,
-  `flap_at_16`, `no_flap`. Exactly one flap or none per window.
+- A **plan** covers one window. Single-flap plans `flap_now` (tick 0), `flap_at_8`,
+  `flap_at_16` and `no_flap` handle fine positioning; `double_flap` (ticks 0, 12) and
+  `triple_flap` (ticks 0, 8, 16) let the bird climb fast. One flap per 400 ms window gains
+  only ~34 px, which was not enough to recover from a low position.
 - **Pipelining:** the moment plan *k* is committed for window *k*, the client computes
   the exact game state at the start of window *k+1* (physics is deterministic; pipes
   scroll at constant speed) using `JevPhysics.advance(state, plan)`, and immediately sends
@@ -87,8 +89,8 @@ All three browser modules are UMD-style: `module.exports` under Node, else a glo
 
 ```js
 JevPhysics.HORIZON            // 24
-JevPhysics.PLANS              // ['flap_now','flap_at_8','flap_at_16','no_flap']
-JevPhysics.FLAP_TICK          // { flap_now:0, flap_at_8:8, flap_at_16:16, no_flap:null }
+JevPhysics.PLANS              // Object.keys(FLAP_TICKS)
+JevPhysics.FLAP_TICKS         // { flap_now:[0], flap_at_8:[8], flap_at_16:[16], double_flap:[0,12], triple_flap:[0,8,16], no_flap:[] }
 JevPhysics.LOOKAHEAD          // 36  (extra ticks simulated after the window, coasting)
 
 // GameState (plain JSON, produced by the scene, sent to the server):
@@ -107,7 +109,7 @@ JevPhysics.simulate(state, flapTicks /* number[] */, ticks /* number */)
 JevPhysics.forecastPlans(state)
 // → { flap_now: PlanOutcome, flap_at_8: ..., flap_at_16: ..., no_flap: ... }
 // PlanOutcome = {
-//   flapAtTick: 0|8|16|null,
+//   flapTicks: number[],                     // ticks within the window at which the bird flaps
 //   endY, endVelocity,                       // after HORIZON ticks
 //   offsetFromGapCenterAtEnd,                // endY - gapCenter (positive = below centre)
 //   minClearance,                            // min distance (px) between bird edge and any
@@ -237,7 +239,7 @@ Scene responsibilities:
     agree }`, push to `history` (keep 50).
   - compute `nextState = JevPhysics.advance(gameState(), plan)`, send request `k+1` with
     `id = k+1` (only if running, alive, visible, under cap).
-  - inside the window, at tick `FLAP_TICK[plan]`, call `bird.jump()`.
+  - inside the window, at every tick in `FLAP_TICKS[plan]`, call `bird.jump()`.
 - `step()`: pipes update + recycling (keep the prototype's manual recycling, it was
   correct), bird update, collision, score. On death: cancel requests, state `dead`.
 - `draw()`: original look: `BG_COLOR` background, pipes via `pipe.show()`, bird via

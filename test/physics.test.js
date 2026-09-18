@@ -137,7 +137,7 @@ test('advance() matches stepping the real Bird + Pipe classes HORIZON times', ()
 
     const advanced = JevPhysics.advance(state, 'flap_at_8');
     for (let t = 0; t < JevPhysics.HORIZON; t++) {
-        if (t === JevPhysics.FLAP_TICK.flap_at_8) realBird.jump();
+        if (JevPhysics.FLAP_TICKS.flap_at_8.includes(t)) realBird.jump();
         realBird.update();
         pipeList.forEach(p => p.update());
     }
@@ -169,7 +169,7 @@ test('forecastPlans returns a PlanOutcome per plan with the documented shape', (
     assert.deepEqual(Object.keys(forecasts).sort(), [...JevPhysics.PLANS].sort());
     for (const plan of JevPhysics.PLANS) {
         const outcome = forecasts[plan];
-        assert.equal(outcome.flapAtTick, JevPhysics.FLAP_TICK[plan]);
+        assert.deepEqual(outcome.flapTicks, JevPhysics.FLAP_TICKS[plan]);
         assert.ok(Number.isFinite(outcome.endY));
         assert.ok(Number.isFinite(outcome.endVelocity));
         assert.ok(Number.isFinite(outcome.offsetFromGapCenterAtEnd));
@@ -210,4 +210,20 @@ test('bestPlan picks the latest collision tick when every plan is fatal', () => 
         no_flap: { collisionWithinWindow: { tick: 3, with: 'ground' } }
     };
     assert.equal(JevPhysics.bestPlan(forecasts), 'flap_at_8');
+});
+
+test('triple_flap fires three jumps and climbs far more than a single flap', () => {
+    const state = makeState();
+    const f = JevPhysics.forecastPlans(state);
+    assert.ok(f.triple_flap.endY < f.flap_now.endY - 40, 'three flaps must gain much more height than one');
+    assert.ok(f.double_flap.endY < f.flap_now.endY, 'two flaps must gain more height than one');
+    // Parity: advance() with a multi-flap plan equals stepping tick by tick with jumps.
+    let y = state.bird.y, v = state.bird.velocity;
+    for (let t = 0; t < JevPhysics.HORIZON; t++) {
+        if (JevPhysics.FLAP_TICKS.triple_flap.includes(t)) v = -state.physics.jumpPower;
+        if (y < state.world.groundY) { y += v; v += state.physics.gravity; } else { y = state.world.groundY; }
+    }
+    const adv = JevPhysics.advance(state, 'triple_flap');
+    assert.ok(Math.abs(adv.bird.y - y) < 1e-9);
+    assert.ok(Math.abs(adv.bird.velocity - v) < 1e-9);
 });

@@ -25,8 +25,9 @@ ever sent to the local proxy, which forwards it as the `Authorization` header to
 The full design is in [docs/jev-design.md](docs/jev-design.md). Short version:
 
 - **The game never pauses for the network.** Physics runs at a fixed 60 Hz.
-- Time is split into **24-tick windows (400 ms)**. For each window Jev picks one of four
-  plans: `flap_now`, `flap_at_8`, `flap_at_16`, `no_flap`.
+- Time is split into **24-tick windows (400 ms)**. For each window Jev picks one of six
+  plans: `flap_now`, `flap_at_8`, `flap_at_16`, `no_flap`, plus `double_flap` (ticks 0 and
+  12) and `triple_flap` (ticks 0, 8, 16) for fast climbs.
 - Code simulates every plan exactly and puts the outcomes in the request state (end
   position relative to the gap centre, minimum clearance, collision within the window,
   what happens if the bird keeps coasting). Jev answers one **Choice** question; its

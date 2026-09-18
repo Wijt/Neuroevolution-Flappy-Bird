@@ -5,8 +5,18 @@
     // so a 400 ms window lets the pipelined answer arrive in time almost always.
     const HORIZON = 24;
     const LOOKAHEAD = 36;
-    const FLAP_TICK = { flap_now: 0, flap_at_8: 8, flap_at_16: 16, no_flap: null };
-    const PLANS = Object.keys(FLAP_TICK);
+    // Each plan is a list of ticks (0-indexed within the window) at which the bird flaps.
+    // Single flaps cover fine positioning; the multi-flap plans let the bird climb fast
+    // (one flap per 24 ticks can only gain ~34 px per window).
+    const FLAP_TICKS = {
+        flap_now: [0],
+        flap_at_8: [8],
+        flap_at_16: [16],
+        double_flap: [0, 12],
+        triple_flap: [0, 8, 16],
+        no_flap: []
+    };
+    const PLANS = Object.keys(FLAP_TICKS);
 
     function clamp(v, min, max) { return Math.min(Math.max(v, min), max); }
 
@@ -85,8 +95,7 @@
     // pipes shifted by pipeSpeed*HORIZON, pipes that have fully scrolled past the bird dropped.
     // Pure; does not mutate `state`.
     function advance(state, plan) {
-        const flapTick = FLAP_TICK[plan];
-        const flapTicks = flapTick === null ? [] : [flapTick];
+        const flapTicks = FLAP_TICKS[plan];
         const physics = state.physics;
         const groundY = state.world.groundY;
         let y = state.bird.y;
@@ -115,8 +124,7 @@
         const gapCenter = nextPipe ? (nextPipe.gapTop + nextPipe.gapBottom) / 2 : null;
         const result = {};
         for (const plan of PLANS) {
-            const flapTick = FLAP_TICK[plan];
-            const flapTicks = flapTick === null ? [] : [flapTick];
+            const flapTicks = FLAP_TICKS[plan];
             const sim = runSimulation(state, flapTicks, totalTicks);
             const windowPoint = sim.points[HORIZON - 1];
             const endY = windowPoint.y;
@@ -130,7 +138,7 @@
             }
             const passesGapIfCoastingAfter = collisionWithinWindow ? false : sim.passedGap;
             result[plan] = {
-                flapAtTick: flapTick,
+                flapTicks: flapTicks.slice(),
                 endY, endVelocity,
                 offsetFromGapCenterAtEnd: gapCenter === null ? null : endY - gapCenter,
                 minClearance,
@@ -144,9 +152,10 @@
     }
 
     function bestPlan(forecasts) {
-        const safe = PLANS.filter(p => !forecasts[p].collisionWithinWindow);
+        const plans = PLANS.filter(p => forecasts[p]);
+        const safe = plans.filter(p => !forecasts[p].collisionWithinWindow);
         if (safe.length === 0) {
-            return PLANS.reduce((best, p) =>
+            return plans.reduce((best, p) =>
                 forecasts[p].collisionWithinWindow.tick > forecasts[best].collisionWithinWindow.tick ? p : best);
         }
         safe.sort((a, b) => {
@@ -158,7 +167,7 @@
         return safe[0];
     }
 
-    const api = { HORIZON, LOOKAHEAD, PLANS, FLAP_TICK, simulate, forecastPlans, advance, bestPlan };
+    const api = { HORIZON, LOOKAHEAD, PLANS, FLAP_TICKS, simulate, forecastPlans, advance, bestPlan };
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
     else root.JevPhysics = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

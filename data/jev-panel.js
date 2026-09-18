@@ -11,7 +11,7 @@
         return node;
     }
 
-    const PLANS = (root.JevPhysics && root.JevPhysics.PLANS) || ['flap_now', 'flap_at_8', 'flap_at_16', 'no_flap'];
+    const PLANS = (root.JevPhysics && root.JevPhysics.PLANS) || ['flap_now', 'flap_at_8', 'flap_at_16', 'double_flap', 'triple_flap', 'no_flap'];
     const PLAN_LABELS = Object.fromEntries(PLANS.map(p => [p, p]));
 
     class JevPanel {

@@ -13,12 +13,14 @@
             'Use `plans`: each plan is simulated exactly. Any plan whose `collisionWithinWindow` is not "none" is fatal and must not be chosen. ' +
             'Among safe plans, prefer one whose `ifCoastingAfterWindow.collision` is "none" or latest, and whose `offsetFromGapCenterAtEnd` is closest to 0 ' +
             `(negative = above centre, positive = below). A new plan is chosen every ${H} ticks, so a distant coasting collision can still be avoided later; ` +
-            'do not flap when already above centre and rising.',
+            'Do not flap when already above centre and rising. Use `double_flap` or `triple_flap` when the bird is far below the gap centre ' +
+            'or falling toward the bottom pipe or ground and a single flap does not lift it enough; single flaps are for fine positioning.',
         criteria: Object.fromEntries(PLANS.map(plan => {
-            const t = physics.FLAP_TICK[plan];
-            const what = t === null ? `No flap for all ${H} ticks; keep falling or keep current momentum.`
-                : t === 0 ? 'Flap immediately (tick 0), then coast for the rest of the window.'
-                : `Coast ${t} ticks, flap at tick ${t}, then coast.`;
+            const ticks = physics.FLAP_TICKS[plan];
+            const what = ticks.length === 0 ? `No flap for all ${H} ticks; keep falling or keep current momentum.`
+                : ticks.length === 1 ? (ticks[0] === 0 ? 'One flap immediately (tick 0), then coast for the rest of the window.'
+                    : `Coast ${ticks[0]} ticks, one flap at tick ${ticks[0]}, then coast.`)
+                : `${ticks.length} flaps at ticks ${ticks.join(', ')}: ${ticks.length === 3 ? 'fastest possible climb' : 'steady climb'}.`;
             return [plan, { what, outcome: `see \`plans.${plan}\`` }];
         }))
     };
@@ -62,7 +64,7 @@
         for (const plan of PLANS) {
             const f = forecasts[plan];
             jevState.plans[plan] = {
-                flapAtTick: f.flapAtTick,
+                flapAtTicks: f.flapTicks,
                 endY: round1(f.endY),
                 endVelocity: round1(f.endVelocity),
                 offsetFromGapCenterAtEnd: f.offsetFromGapCenterAtEnd === null ? null : round1(f.offsetFromGapCenterAtEnd),

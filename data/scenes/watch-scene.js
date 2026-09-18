@@ -334,7 +334,7 @@ class WatchScene extends Scene {
         if (this.windowTick === 0) {
             this.commitWindow();
         }
-        if (this.currentPlan && JevPhysics.FLAP_TICK[this.currentPlan] === this.windowTick) {
+        if (this.currentPlan && JevPhysics.FLAP_TICKS[this.currentPlan].includes(this.windowTick)) {
             this.bird.jump();
         }
         this.step();
