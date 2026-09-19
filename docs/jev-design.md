@@ -365,9 +365,10 @@ Criteria describe **controls** (what a flap does in general), never this situati
 
 Policy uses Jev's whole distribution, not the argmax, and Jev's own danger judgment:
 
-1. `flaps = round(E[flaps])` where `E = 0·p(none) + 1·p(one) + 2·p(two) + 3·p(three)`.
-   A 55/34/8/2 split (argmax "none") is 0.56 expected flaps → one flap. This removes
-   the bang-bang none/three oscillation seen in live play.
+1. `flaps = median of the climb distribution` (the level where cumulative probability
+   reaches 0.5). The mean was tried first and rejected: Jev often answers 76% none with a
+   22% three_flaps tail, and the mean (0.69) rounded to a flap that overrode a clear
+   majority and hit the top pipe. The median follows the majority and ignores tails.
 2. If that gives 0 flaps but `danger.noul >= 0.6`, flap once anyway.
 3. 1 flap → `timing` picks `flap_now` / `flap_at_8` / `flap_at_16`; 2 → `double_flap`;
    3 → `triple_flap`; 0 → `no_flap`.

@@ -43,10 +43,7 @@
     const DANGER_FLOOR = 0.8;
     const PLAN_OF_FLAPS = { 0: 'no_flap', 2: 'double_flap', 3: 'triple_flap' };
 
-    // Expected number of flaps under Jev's whole distribution (probability-weighted), not
-    // just the argmax. A 55/34/8/2 split over none/one/two/three means 0.56 flaps: one flap,
-    // where the argmax would say none. Falls back to the chosen option when there is no
-    // distribution (tests, older payloads).
+    // Expected number of flaps (probability-weighted), reported for the console only.
     function expectedFlaps(climb) {
         const p = climb && climb.probabilities;
         if (!p) return FLAPS_OF[climb && climb.choice] || 0;
@@ -55,14 +52,28 @@
         return e;
     }
 
+    // Median number of flaps: the level where cumulative probability reaches 0.5.
+    // Robust to tails: 76% none / 22% three_flaps is "none" (the mean, 0.69, would round
+    // to one flap and override a clear majority; live play died on exactly that).
+    function medianFlaps(climb) {
+        const p = climb && climb.probabilities;
+        if (!p) return FLAPS_OF[climb && climb.choice] || 0;
+        let cum = 0;
+        for (const key of ['none', 'one_flap', 'two_flaps', 'three_flaps']) {
+            cum += p[key] || 0;
+            if (cum >= 0.5) return FLAPS_OF[key];
+        }
+        return 3;
+    }
+
     // Code composes the plan from Jev's judgments. Policy, explicit and in one place:
-    //  - flaps = expected flaps rounded to the nearest whole number;
-    //  - if Jev is clearly sure about danger (>= 0.8) and the rounding gave zero flaps, flap
-    //    once anyway. Live data showed danger sits at 0.45-0.79 for any falling bird, so a
-    //    0.6 floor over-flapped into the top pipe; 0.8 only fires on a real alarm.
+    //  - flaps = median of Jev's climb distribution;
+    //  - if Jev is clearly sure about danger (>= DANGER_FLOOR) and that gave zero flaps,
+    //    flap once anyway. Live data showed danger sits at 0.45-0.79 for any falling bird,
+    //    so the floor is 0.8: it only fires on a real alarm.
     // Nothing here looks at physics; only Jev's answers.
     function composePlan(answers) {
-        let flaps = Math.round(expectedFlaps(answers.climb));
+        let flaps = medianFlaps(answers.climb);
         const danger = answers.danger && Number.isFinite(answers.danger.noul) ? answers.danger.noul : 0;
         if (flaps === 0 && danger >= DANGER_FLOOR) flaps = 1;
         flaps = Math.max(0, Math.min(3, flaps));
@@ -254,7 +265,7 @@
         };
     }
 
-    const api = { PLANS, questions, buildRequest, parseResponse, composePlan, expectedFlaps, defaultPrompts, resolvePrompts };
+    const api = { PLANS, questions, buildRequest, parseResponse, composePlan, expectedFlaps, medianFlaps, defaultPrompts, resolvePrompts };
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
     else root.JevContract = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

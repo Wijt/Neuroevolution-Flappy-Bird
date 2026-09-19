@@ -80,21 +80,23 @@ test('buildRequest custom model is forwarded', () => {
     assert.equal(request.model, 'jev-custom');
 });
 
-test('composePlan uses the expected number of flaps and a danger floor', () => {
+test('composePlan uses the median of the climb distribution and a danger floor', () => {
     const dist = (none, one, two, three) => ({ probabilities: { none, one_flap: one, two_flaps: two, three_flaps: three } });
     const answers = (climb, timing, danger) => ({ climb, timing: { choice: timing }, danger: { noul: danger } });
-    // 55/34/8/2: argmax says none, expectation 0.56 -> one flap
-    assert.equal(JevContract.composePlan(answers(dist(0.55, 0.34, 0.08, 0.02), 'now', 0.3)), 'flap_now');
-    // 95/2/2/1 -> 0.09 -> none, low danger keeps it none
-    assert.equal(JevContract.composePlan(answers(dist(0.95, 0.02, 0.02, 0.01), 'now', 0.4)), 'no_flap');
-    // ... a noisy danger (0.75) does not; only a clear alarm (>= 0.8) turns none into one flap
+    // 76% none with a 22% three_flaps tail: median is none (the mean would say one flap)
+    assert.equal(JevContract.composePlan(answers(dist(0.76, 0.01, 0.01, 0.22), 'now', 0.63)), 'no_flap');
+    // 57/13/5/25 -> none
+    assert.equal(JevContract.composePlan(answers(dist(0.57, 0.13, 0.05, 0.25), 'now', 0.6)), 'no_flap');
+    // 28/53/17/1 -> one flap, timing decides
+    assert.equal(JevContract.composePlan(answers(dist(0.28, 0.53, 0.17, 0.01), 'late', 0.4)), 'flap_at_16');
+    // 4/35/48/13 -> cumulative crosses 0.5 at two_flaps
+    assert.equal(JevContract.composePlan(answers(dist(0.04, 0.35, 0.48, 0.13), 'now', 0.7)), 'double_flap');
+    // 2/7/20/71 -> three
+    assert.equal(JevContract.composePlan(answers(dist(0.02, 0.07, 0.2, 0.71), 'now', 0.9)), 'triple_flap');
+    // danger floor: a clear alarm (>= 0.8) turns none into one flap; 0.75 does not
     assert.equal(JevContract.composePlan(answers(dist(0.95, 0.02, 0.02, 0.01), 'soon', 0.75)), 'no_flap');
     assert.equal(JevContract.composePlan(answers(dist(0.95, 0.02, 0.02, 0.01), 'soon', 0.85)), 'flap_at_8');
-    // 4/35/48/13 -> 1.7 -> two flaps
-    assert.equal(JevContract.composePlan(answers(dist(0.04, 0.35, 0.48, 0.13), 'now', 0.7)), 'double_flap');
-    // 11/13/38/38 -> 2.03 -> two flaps; 2/7/20/71 -> 2.6 -> three
-    assert.equal(JevContract.composePlan(answers(dist(0.11, 0.13, 0.38, 0.38), 'now', 0.9)), 'double_flap');
-    assert.equal(JevContract.composePlan(answers(dist(0.02, 0.07, 0.2, 0.71), 'now', 0.9)), 'triple_flap');
+    assert.equal(JevContract.medianFlaps(dist(0.76, 0.01, 0.01, 0.22)), 0);
     assert.equal(JevContract.expectedFlaps(dist(0.55, 0.34, 0.08, 0.02)).toFixed(2), '0.56');
 });
 
