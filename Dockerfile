@@ -1,10 +1,7 @@
-FROM nginx:alpine
-
-# Copy static assets to nginx html directory
-COPY . /usr/share/nginx/html
-
-# Expose port 80
-EXPOSE 80
-
-# Start Nginx
-CMD ["nginx", "-g", "daemon off;"]
+FROM node:24-alpine
+WORKDIR /app
+COPY package.json server.js index.html ./
+COPY data ./data
+ENV PORT=3000 HOST=0.0.0.0
+EXPOSE 3000
+CMD ["node", "server.js"]

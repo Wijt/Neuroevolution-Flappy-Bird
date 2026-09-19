@@ -1,6 +1,4 @@
 
-let geniusBirdJson;
-
 var sceneManager;
 var assets;
 
@@ -10,8 +8,6 @@ const TRAIN_SCENE = 2;
 const WATCH_SCENE = 3;
 
 function preload(){
-    geniusBirdJson = loadJSON("data\\birdBrain_5-10-10-1_ai.json");
-
     assets = {};
     assets["main_bg_bottom"] = loadImage("data\\img\\main_bg_bottom.png");
     assets["main_bg"] = loadImage("data\\img\\main_bg.png");
@@ -27,8 +23,6 @@ function preload(){
 }
 
 function setup(){
-    geniusBirdBrain = NeuralNetwork.deserialize(geniusBirdJson);
-    
     let cnv;
     if(windowWidth < 1000)
         cnv = createCanvas(windowWidth, windowHeight);
