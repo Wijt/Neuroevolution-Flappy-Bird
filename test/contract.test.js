@@ -227,3 +227,29 @@ test('hole sensor names both edges', () => {
     const st = JevContract.buildRequest(state).state;
     assert.match(st.hole, /^BELOW you by 22 px \(top edge 40 px above you, bottom edge 85 px below you\)$/);
 });
+
+test('prompts can be overridden from the console; keys stay fixed and bad values fall back', () => {
+    const defaults = JevContract.defaultPrompts();
+    assert.deepEqual(Object.keys(defaults.questions), ['danger', 'climb', 'timing']);
+    const custom = {
+        game: '  Sen kussun. Delikten gec.  ',
+        questions: {
+            climb: { instructions: 'Kac kanat?', criteria: { none: 'Hic', bogus: 'ignored', one_flap: '' } },
+            timing: { instructions: 'x'.repeat(5000) },
+            unknown: { instructions: 'ignored' }
+        }
+    };
+    const request = JevContract.buildRequest(makeState(), 'jev-latest', custom);
+    assert.equal(request.state.game, 'Sen kussun. Delikten gec.');
+    assert.equal(request.questions.climb.instructions, 'Kac kanat?');
+    assert.equal(request.questions.climb.criteria.none, 'Hic');
+    assert.equal(request.questions.climb.criteria.one_flap, defaults.questions.climb.criteria.one_flap); // empty -> default
+    assert.equal(request.questions.climb.criteria.bogus, undefined);
+    assert.equal(request.questions.timing.instructions, defaults.questions.timing.instructions); // too long -> default
+    assert.equal(request.questions.unknown, undefined);
+    assert.equal(request.questions.danger.type, 'noul');
+    assert.equal(request.questions.climb.type, 'choice');
+    // no overrides -> identical to defaults
+    const plain = JevContract.buildRequest(makeState());
+    assert.equal(plain.questions.climb.instructions, defaults.questions.climb.instructions);
+});

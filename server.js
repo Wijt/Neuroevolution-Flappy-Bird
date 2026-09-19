@@ -94,7 +94,7 @@ function createServer({
                 let body = '';
                 for await (const chunk of req) {
                     body += chunk;
-                    if (Buffer.byteLength(body) > 16384) return json(res, 413, { error: 'Request too large.' });
+                    if (Buffer.byteLength(body) > 65536) return json(res, 413, { error: 'Request too large.' });
                 }
                 let payload;
                 try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'Invalid JSON.' }); }
@@ -109,6 +109,8 @@ function createServer({
                 if (!requestKey) return json(res, 503, { error: 'No API key. Enter one in the page or set TYPESAFE_API_KEY.' });
 
                 const state = payload?.state;
+                // Console-edited prompt texts; unknown keys and bad values fall back to defaults.
+                const prompts = payload?.prompts && typeof payload.prompts === 'object' ? payload.prompts : null;
                 if (!validateGameState(state)) return json(res, 400, { error: 'Invalid game state.' });
 
                 const keyId = createHash('sha256').update(requestKey).digest('hex');
@@ -131,7 +133,7 @@ function createServer({
                 res.on('close', cancelOnDisconnect);
                 const started = Date.now();
                 try {
-                    const request = JevContract.buildRequest(state, model);
+                    const request = JevContract.buildRequest(state, model, prompts);
                     const fetchOptions = {
                         method: 'POST',
                         signal: controller.signal,

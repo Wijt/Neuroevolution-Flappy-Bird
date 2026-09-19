@@ -190,3 +190,15 @@ test('the API key is never present in the body sent upstream', async t => {
     assert.ok(!sentBody.includes('browser-secret-value'));
     assert.ok(!sentBody.includes('server-secret'));
 });
+
+test('console prompts reach TypeSafe; unknown keys are dropped', async t => {
+    let sent;
+    const { post } = await app(t, { apiKey: 'key', fetchImpl: async (url, options) => {
+        sent = JSON.parse(options.body); return Response.json(answer('none'));
+    } });
+    const response = await post({ id: 1, state, apiKey: '', prompts: { game: 'Custom game text.', questions: { climb: { instructions: 'Custom climb?' }, nope: {} } } });
+    assert.equal(response.status, 200);
+    assert.equal(sent.state.game, 'Custom game text.');
+    assert.equal(sent.questions.climb.instructions, 'Custom climb?');
+    assert.equal(sent.questions.nope, undefined);
+});

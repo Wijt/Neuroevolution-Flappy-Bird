@@ -20,9 +20,9 @@
                 'too few drop you into the bottom pipe. If you are rising, you usually need nothing.',
             criteria: {
                 none: 'The hole is below you, or you are rising and already above the hole. No flap needed.',
-                one_flap: 'The hole is roughly at your height, or a little above you (less than about 40 px), and you are falling.',
-                two_flaps: 'The hole is clearly above you (about 40 to 90 px), or a little above you and you are falling fast.',
-                three_flaps: 'The hole is far above you (more than about 90 px), or you are falling fast toward the bottom pipe or the ground.'
+                one_flap: 'You are falling and the hole is at your height or up to about 60 px above you.',
+                two_flaps: 'The hole is clearly above you (about 60 to 120 px), or a little above you and you are falling fast.',
+                three_flaps: 'The hole is far above you (more than about 120 px), or you are falling fast toward the bottom pipe or the ground.'
             }
         },
         timing: {
@@ -132,13 +132,65 @@
 
     // Perception only: where the hole is, how the bird is moving, how far the pipe is
     // and what three rays touch. No option outcomes, no tick jargon.
-    function buildSensorState(state) {
+    const GAME_TEXT = 'You are the bird in Flappy Bird. Fly through the hole between the top pipe and the bottom pipe. Touching a pipe or the ground kills you. You fall all the time; a flap gives one push upward.';
+
+    // Everything a person may rewrite from the console: the game sentence, each
+    // question's instructions and each criterion's text. Keys (question ids, option
+    // names) are fixed because code composes the plan from them.
+    function defaultPrompts() {
+        const out = { game: GAME_TEXT, questions: {} };
+        for (const id in questions) {
+            const q = questions[id];
+            out.questions[id] = { instructions: q.instructions };
+            if (q.criteria) out.questions[id].criteria = Object.assign({}, q.criteria);
+        }
+        return out;
+    }
+
+    const MAX_PROMPT_CHARS = 1500;
+    function cleanText(v, fallback) {
+        if (typeof v !== 'string') return fallback;
+        const t = v.trim();
+        if (!t || t.length > MAX_PROMPT_CHARS) return fallback;
+        return t;
+    }
+
+    // Merge user overrides onto the defaults, accepting only known keys and strings.
+    // Unknown or malformed parts fall back to the default text; never throws.
+    function resolvePrompts(overrides) {
+        const base = defaultPrompts();
+        if (!overrides || typeof overrides !== 'object') return base;
+        base.game = cleanText(overrides.game, base.game);
+        const oq = overrides.questions && typeof overrides.questions === 'object' ? overrides.questions : {};
+        for (const id in base.questions) {
+            const o = oq[id];
+            if (!o || typeof o !== 'object') continue;
+            base.questions[id].instructions = cleanText(o.instructions, base.questions[id].instructions);
+            if (base.questions[id].criteria && o.criteria && typeof o.criteria === 'object') {
+                for (const key in base.questions[id].criteria) {
+                    base.questions[id].criteria[key] = cleanText(o.criteria[key], base.questions[id].criteria[key]);
+                }
+            }
+        }
+        return base;
+    }
+
+    function buildQuestions(prompts) {
+        const out = {};
+        for (const id in questions) {
+            out[id] = { type: questions[id].type, instructions: prompts.questions[id].instructions };
+            if (questions[id].criteria) out[id].criteria = prompts.questions[id].criteria;
+        }
+        return out;
+    }
+
+    function buildSensorState(state, gameText = GAME_TEXT) {
         const bird = state.bird;
         const pipe = state.pipes[0];
         const gapCenter = (pipe.gapTop + pipe.gapBottom) / 2;
         const diff = bird.y - gapCenter;
         const sensorState = {
-            game: 'You are the bird in Flappy Bird. Fly through the hole between the top pipe and the bottom pipe. Touching a pipe or the ground kills you. You fall all the time; a flap gives one push upward.',
+            game: gameText,
             you: motionWord(bird.velocity),
             hole: describeHole(diff, pipe, bird.y),
             pipe: describePipe(state),
@@ -152,8 +204,10 @@
         return sensorState;
     }
 
-    function buildRequest(state, model = 'jev-latest') {
-        return { model, state: buildSensorState(state), questions };
+    // `prompts` (optional) carries console-edited texts; see resolvePrompts.
+    function buildRequest(state, model = 'jev-latest', prompts = null) {
+        const resolved = resolvePrompts(prompts);
+        return { model, state: buildSensorState(state, resolved.game), questions: buildQuestions(resolved) };
     }
 
     function isProbability(v) { return Number.isFinite(v) && v >= 0 && v <= 1; }
@@ -200,7 +254,7 @@
         };
     }
 
-    const api = { PLANS, questions, buildRequest, parseResponse, composePlan, expectedFlaps };
+    const api = { PLANS, questions, buildRequest, parseResponse, composePlan, expectedFlaps, defaultPrompts, resolvePrompts };
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
     else root.JevContract = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
