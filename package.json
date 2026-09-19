@@ -1,0 +1,17 @@
+{
+    "name": "flappy-jev",
+    "version": "1.0.0",
+    "private": true,
+    "description": "Flappy Bird with a TypeSafe Jev pilot, served by a small Express proxy.",
+    "engines": {
+        "node": ">=20"
+    },
+    "scripts": {
+        "start": "node server/server.js",
+        "calibrate": "node harness/calibrate.js"
+    },
+    "dependencies": {
+        "dotenv": "^16.6.1",
+        "express": "^4.22.3"
+    }
+}

@@ -1,10 +1,13 @@
-FROM nginx:alpine
+FROM node:20-alpine
 
-# Copy static assets to nginx html directory
-COPY . /usr/share/nginx/html
+WORKDIR /app
 
-# Expose port 80
-EXPOSE 80
+COPY package*.json ./
+RUN npm ci --omit=dev
 
-# Start Nginx
-CMD ["nginx", "-g", "daemon off;"]
+COPY . .
+
+ENV PORT=3000
+EXPOSE 3000
+
+CMD ["node", "server/server.js"]
