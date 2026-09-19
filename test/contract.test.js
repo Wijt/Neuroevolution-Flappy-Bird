@@ -57,7 +57,7 @@ test('hole straight ahead and pipe distance buckets', () => {
     state.bird.velocity = 0;
     const st = JevContract.buildRequest(state).state;
     assert.match(st.you, /^level/);
-    assert.match(st.hole, /^straight ahead at your height (top edge/);
+    assert.match(st.hole, /^straight ahead at your height \(top edge/);
 
     state.pipes = [{ left: 1000, right: 1050, gapTop: 260, gapBottom: 385 }];
     const far = JevContract.buildRequest(state).state;
