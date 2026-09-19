@@ -48,7 +48,7 @@ class Pipe {
     update() {
         this.pos.x -= this.velocity;
         if (this.pos.x < -this.width/2){
-            sceneManager.getActiveScene().pipes.splice(this, 1);
+            sceneManager.getActiveScene().pipes.splice(sceneManager.getActiveScene().pipes.indexOf(this), 1);
             new Pipe(sceneManager.getActiveScene().pipes[sceneManager.getActiveScene().pipes.length-1].pos.x + PIPE_BETWEEN + PIPE_WIDTH, random(150, height-150));
         }
 
