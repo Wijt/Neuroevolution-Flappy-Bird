@@ -2,9 +2,9 @@
 // Turns raw numbers from the game loop into a small, fixed vocabulary.
 // No p5 globals, no DOM, no width/height. Safe to require() from Node.
 var JevTranslator = (function () {
-    var VERSION = "1.2.0";
+    var VERSION = "1.3.1";
 
-    var RULES_TEXT = "The bird flies right at constant speed and cannot slow down or turn. Gravity pulls it down constantly. A flap gives one short upward hop, after which it falls again; flapping repeatedly stacks hops upward. Pipes arrive from the right; each has a top and bottom pipe with an opening between them. Touching a pipe, the ground or the ceiling ends the flight.";
+    var RULES_TEXT = "The bird flies right at constant speed and cannot slow down or turn. Gravity pulls it down constantly. A flap gives one short upward hop, after which it falls again; flapping repeatedly stacks hops upward. A single hop from the middle of an opening carries the bird all the way up into the top pipe, so the bird should only hop when it is below the middle of the opening. Pipes arrive from the right; each has a top and bottom pipe with an opening between them. Touching a pipe, the ground or the ceiling ends the flight.";
 
     // v is px/frame, negative is upward on screen.
     function verticalMotion(v) {

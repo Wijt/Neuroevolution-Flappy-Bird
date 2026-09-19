@@ -8,7 +8,8 @@
     },
     "scripts": {
         "start": "node server/server.js",
-        "calibrate": "node harness/calibrate.js"
+        "calibrate": "node harness/calibrate.js",
+        "simulate": "node harness/simulate.js"
     },
     "dependencies": {
         "dotenv": "^16.6.1",
