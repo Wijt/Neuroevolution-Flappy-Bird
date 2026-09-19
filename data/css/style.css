@@ -188,6 +188,26 @@ body.jev-watch-open {
 .jev-console-history { list-style: none; margin: 0; padding: 0; max-height: 160px; overflow-y: auto; font: 10px/1.7 Consolas, "Courier New", monospace; color: #6fd39a; }
 .jev-console-history li { border-bottom: 1px solid #1f7a45; padding: 2px 0; }
 
+.jev-console-prompts-body { padding: 10px 8px 2px; }
+.jev-console-prompt-label { font-size: 10px; color: #6fd39a; text-transform: uppercase; letter-spacing: .04em; margin: 8px 0 3px; }
+.jev-console-prompt-label:first-child { margin-top: 0; }
+.jev-console-prompt-field {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 6px 8px;
+    border: 1px solid #1f7a45;
+    border-left-width: 1px;
+    background: #010402;
+    color: #b8ffd4;
+    font: 11px/1.45 Consolas, "Courier New", monospace;
+    resize: vertical;
+}
+.jev-console-prompt-field-small { min-height: 34px; }
+.jev-console-prompt-field.jev-console-prompt-modified { border-left: 3px solid #ffb347; padding-left: 6px; }
+.jev-console-prompts .jev-console-status { margin-top: 8px; }
+.jev-console-prompts .jev-console-conf { margin-top: 2px; }
+
 /* Graph nodes/edges. */
 .jev-graph-node rect { fill: #010402; stroke: #1f7a45; stroke-width: 1; }
 .jev-graph-node text { fill: #6fd39a; font: 9px Consolas, monospace; }

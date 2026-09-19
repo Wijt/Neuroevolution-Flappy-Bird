@@ -230,6 +230,12 @@ class WatchScene extends Scene {
         return this.panel ? this.panel.getApiKey() : (this.apiKey || '');
     }
 
+    // Console-edited prompt overrides (see jev-console.js PROMPTS section), or null when
+    // there is no panel or nothing was edited, so the request stays default-sized.
+    getPrompts() {
+        return this.panel && this.panel.getPrompts ? this.panel.getPrompts() : null;
+    }
+
     now() {
         return (typeof performance !== 'undefined') ? performance.now() : Date.now();
     }
@@ -561,14 +567,15 @@ class WatchScene extends Scene {
             timeoutId = setTimeout(() => controller.abort(), 4000);
         }
 
+        const prompts = this.getPrompts();
         let requestForInspector = null;
-        try { requestForInspector = JevContract.buildRequest(state); } catch (e) { /* ignore */ }
+        try { requestForInspector = JevContract.buildRequest(state, undefined, prompts); } catch (e) { /* ignore */ }
         if (this.panel) this.panel.setLastExchange(requestForInspector, null);
 
         const fetchOptions = {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ id, state, apiKey })
+            body: JSON.stringify({ id, state, apiKey, prompts })
         };
         if (controller) fetchOptions.signal = controller.signal;
 

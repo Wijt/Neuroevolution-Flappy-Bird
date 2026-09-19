@@ -277,6 +277,34 @@ test('death cancels the in-flight request', async () => {
     assert.equal(scene.state, 'dead');
 });
 
+test('prompts from the console panel are forwarded in the request body; absent without a panel', async () => {
+    let capturedBody = null;
+    const { scene, tick } = sceneHarness(async (url, opts) => {
+        capturedBody = JSON.parse(opts.body);
+        return new Promise(() => {});
+    });
+    scene.state = 'running';
+
+    // No panel: prompts is null.
+    tick();
+    assert.ok(capturedBody, 'expected a request to have been sent');
+    assert.equal(capturedBody.prompts, null);
+
+    // With a panel stub whose getPrompts() returns an object: it is forwarded as-is.
+    // The in-flight request never resolves, so the next request only goes out once its
+    // whole window elapses and the late fallback commits it (same as HORIZON ticks below).
+    const customPrompts = { game: 'custom game text', questions: { danger: { instructions: 'custom danger?' } } };
+    scene.panel = {
+        getPrompts: () => customPrompts,
+        getCap: () => scene.requestCap, getAutoRestart: () => false, getApiKey: () => '',
+        setLastExchange() {}, setDecision() {}, setComparison() {}, setUsage() {}, setHistory() {}, setLog() {}
+    };
+    capturedBody = null;
+    for (let i = 0; i < HORIZON; i++) tick();
+    assert.ok(capturedBody, 'expected a second request to have been sent');
+    assert.deepEqual(capturedBody.prompts, customPrompts);
+});
+
 test('a session request cap stops further requests', () => {
     let calls = 0;
     const { scene, tick } = sceneHarness(() => { calls++; return new Promise(() => {}); });

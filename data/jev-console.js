@@ -68,6 +68,7 @@
             side.appendChild(this._buildOrders());
             side.appendChild(this._buildDirector());
             side.appendChild(this._buildJudgments());
+            side.appendChild(this._buildPrompts());
             side.appendChild(this._buildSitrep());
             side.appendChild(this._buildHistory());
             this.root.appendChild(side);
@@ -208,6 +209,205 @@
             row.appendChild(pct);
             container.appendChild(row);
             return { row, lbl, fill, pct };
+        }
+
+        // ---- prompts (live-editable texts sent to Jev) --------------------------
+
+        _buildPrompts() {
+            const s = el('section', { className: 'jev-console-panel' });
+            const details = el('details', { className: 'jev-console-prompts' });
+            details.appendChild(el('summary', { text: 'PROMPTS · edit what Jev reads' }));
+            const body = el('div', { className: 'jev-console-prompts-body' });
+            details.appendChild(body);
+            s.appendChild(details);
+
+            this.promptDefaults = (root.JevContract && root.JevContract.defaultPrompts)
+                ? root.JevContract.defaultPrompts()
+                : { game: '', questions: {} };
+            this.promptFields = {};
+            this.appliedPrompts = null;
+
+            body.appendChild(this._promptLabel('game'));
+            this.promptFields.game = this._promptField(body, 'game', this.promptDefaults.game, false);
+
+            for (const qid in this.promptDefaults.questions) {
+                const q = this.promptDefaults.questions[qid];
+                body.appendChild(this._promptLabel(qid.toUpperCase() + ' · instructions'));
+                this.promptFields[qid + '.instructions'] = this._promptField(body, qid + '.instructions', q.instructions, false);
+                if (q.criteria) {
+                    for (const key in q.criteria) {
+                        const path = qid + '.criteria.' + key;
+                        body.appendChild(this._promptLabel(qid.toUpperCase() + '.' + key));
+                        this.promptFields[path] = this._promptField(body, path, q.criteria[key], true);
+                    }
+                }
+            }
+
+            const row = el('div', { className: 'jev-console-row' });
+            this.promptApplyButton = el('button', { text: 'Apply' });
+            this.promptApplyButton.addEventListener('click', () => this._applyPrompts());
+            this.promptResetButton = el('button', { text: 'Reset' });
+            this.promptResetButton.addEventListener('click', () => this._resetPrompts());
+            row.appendChild(this.promptApplyButton);
+            row.appendChild(this.promptResetButton);
+            body.appendChild(row);
+
+            this.promptStatusEl = el('div', { className: 'jev-console-status', text: '' });
+            body.appendChild(this.promptStatusEl);
+
+            this.promptTokenEl = el('div', { className: 'jev-console-conf', text: '' });
+            body.appendChild(this.promptTokenEl);
+
+            this._loadStoredPrompts();
+            this._applyPrompts(true);
+
+            return s;
+        }
+
+        _promptLabel(text) {
+            return el('div', { className: 'jev-console-prompt-label', text });
+        }
+
+        _promptField(container, path, value, small) {
+            const ta = el('textarea', {
+                className: 'jev-console-prompt-field' + (small ? ' jev-console-prompt-field-small' : ''),
+                attrs: { rows: small ? '2' : '4', spellcheck: 'false' }
+            });
+            ta.value = value || '';
+            ta.addEventListener('input', () => this._markModified(path));
+            container.appendChild(ta);
+            return ta;
+        }
+
+        _defaultAt(path) {
+            if (path === 'game') return this.promptDefaults.game || '';
+            const parts = path.split('.');
+            const q = this.promptDefaults.questions[parts[0]];
+            if (!q) return '';
+            if (parts[1] === 'instructions') return q.instructions || '';
+            if (parts[1] === 'criteria') return (q.criteria && q.criteria[parts[2]]) || '';
+            return '';
+        }
+
+        _markModified(path) {
+            const ta = this.promptFields[path];
+            if (!ta) return;
+            const modified = ta.value.trim() !== this._defaultAt(path).trim();
+            ta.classList.toggle('jev-console-prompt-modified', modified);
+        }
+
+        _refreshModifiedMarks() {
+            for (const path in this.promptFields) this._markModified(path);
+        }
+
+        _collectPrompts() {
+            const out = { game: this.promptFields.game.value.trim(), questions: {} };
+            for (const qid in this.promptDefaults.questions) {
+                const q = this.promptDefaults.questions[qid];
+                out.questions[qid] = { instructions: this.promptFields[qid + '.instructions'].value.trim() };
+                if (q.criteria) {
+                    out.questions[qid].criteria = {};
+                    for (const key in q.criteria) {
+                        out.questions[qid].criteria[key] = this.promptFields[qid + '.criteria.' + key].value.trim();
+                    }
+                }
+            }
+            return out;
+        }
+
+        _promptsEqualDefaults(p) {
+            if (p.game.trim() !== (this.promptDefaults.game || '').trim()) return false;
+            for (const qid in this.promptDefaults.questions) {
+                const q = this.promptDefaults.questions[qid];
+                if ((p.questions[qid].instructions || '').trim() !== (q.instructions || '').trim()) return false;
+                if (q.criteria) {
+                    for (const key in q.criteria) {
+                        if ((p.questions[qid].criteria[key] || '').trim() !== (q.criteria[key] || '').trim()) return false;
+                    }
+                }
+            }
+            return true;
+        }
+
+        _applyPrompts(silent) {
+            const collected = this._collectPrompts();
+            const modified = !this._promptsEqualDefaults(collected);
+            this.appliedPrompts = modified ? collected : null;
+            this._saveStoredPrompts(this.appliedPrompts);
+            this._refreshModifiedMarks();
+            this._updateTokenEstimate();
+            if (!silent && this.promptStatusEl) {
+                this.promptStatusEl.textContent = 'applied · next request';
+                if (this._promptStatusTimer) clearTimeout(this._promptStatusTimer);
+                this._promptStatusTimer = setTimeout(() => { this.promptStatusEl.textContent = ''; }, 2500);
+            }
+        }
+
+        _resetPrompts() {
+            this.promptFields.game.value = this.promptDefaults.game || '';
+            for (const qid in this.promptDefaults.questions) {
+                const q = this.promptDefaults.questions[qid];
+                this.promptFields[qid + '.instructions'].value = q.instructions || '';
+                if (q.criteria) {
+                    for (const key in q.criteria) {
+                        this.promptFields[qid + '.criteria.' + key].value = q.criteria[key] || '';
+                    }
+                }
+            }
+            this._applyPrompts();
+        }
+
+        _loadStoredPrompts() {
+            try {
+                const raw = localStorage.getItem('jev.prompts.v1');
+                if (!raw) return;
+                const stored = JSON.parse(raw);
+                if (!stored || typeof stored !== 'object') return;
+                if (typeof stored.game === 'string') this.promptFields.game.value = stored.game;
+                const oq = stored.questions && typeof stored.questions === 'object' ? stored.questions : {};
+                for (const qid in this.promptDefaults.questions) {
+                    const o = oq[qid];
+                    if (!o || typeof o !== 'object') continue;
+                    if (typeof o.instructions === 'string') this.promptFields[qid + '.instructions'].value = o.instructions;
+                    const q = this.promptDefaults.questions[qid];
+                    if (q.criteria && o.criteria && typeof o.criteria === 'object') {
+                        for (const key in q.criteria) {
+                            if (typeof o.criteria[key] === 'string') this.promptFields[qid + '.criteria.' + key].value = o.criteria[key];
+                        }
+                    }
+                }
+            } catch (e) { /* ignore: localStorage unavailable or corrupt */ }
+        }
+
+        _saveStoredPrompts(prompts) {
+            try {
+                if (prompts) localStorage.setItem('jev.prompts.v1', JSON.stringify(prompts));
+                else localStorage.removeItem('jev.prompts.v1');
+            } catch (e) { /* ignore: localStorage unavailable */ }
+        }
+
+        _updateTokenEstimate() {
+            if (!this.promptTokenEl) return;
+            if (!root.JevContract || !root.JevContract.buildRequest) { this.promptTokenEl.textContent = ''; return; }
+            const sampleState = {
+                bird: { x: 100, y: 300, velocity: 0, radius: 15 },
+                world: { width: 450, groundY: 750 },
+                physics: { gravity: 0.4, jumpPower: 6, pipeSpeed: 2 },
+                pipes: [{ left: 400, right: 450, gapTop: 260, gapBottom: 385 }]
+            };
+            try {
+                const request = root.JevContract.buildRequest(sampleState, 'jev-latest', this.appliedPrompts);
+                const tokens = Math.round(JSON.stringify(request).length / 4);
+                this.promptTokenEl.textContent = '≈ ' + tokens + ' tokens';
+            } catch (e) {
+                this.promptTokenEl.textContent = '';
+            }
+        }
+
+        // Returns the console-edited prompts object (see jev-contract.js resolvePrompts),
+        // or null when nothing differs from the defaults, so the request stays default-sized.
+        getPrompts() {
+            return this.appliedPrompts;
         }
 
         _buildSitrep() {
