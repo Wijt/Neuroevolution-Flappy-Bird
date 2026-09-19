@@ -8,6 +8,7 @@ const MENU_SCENE = 0;
 const PLAY_SCENE = 1;
 const TRAIN_SCENE = 2;
 const WATCH_SCENE = 3;
+const JEV_SCENE = 4;
 
 function preload(){
     geniusBirdJson = loadJSON("data\\birdBrain_5-10-10-1_ai.json");
@@ -24,6 +25,7 @@ function preload(){
     sceneManager.addScene(new PlayScene());
     sceneManager.addScene(new TrainScene());
     sceneManager.addScene(new WatchScene());
+    sceneManager.addScene(new JevScene());
 }
 
 function setup(){

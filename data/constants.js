@@ -2,6 +2,7 @@
 BIRD_R = 25;
 BIRD_X = 100;
 BIRD_JUMP_POWER = 6;
+JEV_COLLISION_R = BIRD_R - 10; // the radius circleRect() actually tests
 //#endregion
 
 //#region PIPE

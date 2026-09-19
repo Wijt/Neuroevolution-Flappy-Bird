@@ -59,3 +59,159 @@ body {
 .return-to-menu-button:active {
     border-color: red;
 }
+
+.jev-panel {
+    position: fixed;
+    z-index: 10;
+    box-sizing: border-box;
+    width: 300px;
+    padding: 10px 12px;
+    overflow-y: auto;
+
+    background: #16162b;
+    border: 2px solid #1f4068;
+    border-radius: 8px;
+
+    color: #dfe6f3;
+    font-family: "Consolas", "Menlo", monospace;
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+.jev-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 22px;
+    letter-spacing: 0.12em;
+    font-weight: bold;
+    color: #ffffff;
+    cursor: pointer;
+    user-select: none;
+}
+
+.jev-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #8fa6c8;
+}
+
+.jev-panel[data-status="live"] .jev-dot { background: #4caf50; }
+.jev-panel[data-status="dead"] .jev-dot { background: #e43f5a; }
+.jev-panel[data-status="hidden"] .jev-dot { background: #8fa6c8; }
+.jev-panel[data-status="backoff"] .jev-dot { background: #e8a33d; }
+
+.jev-title {
+    margin-top: 10px;
+    color: #8fa6c8;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    border-bottom: 1px solid #1f4068;
+}
+
+.jev-dl {
+    display: grid;
+    grid-template-columns: 86px 1fr;
+    gap: 1px 8px;
+    margin: 4px 0 0 0;
+}
+
+.jev-dl dt {
+    color: #8fa6c8;
+}
+
+.jev-dl dd {
+    margin: 0;
+    word-break: break-word;
+}
+
+.jev-bar {
+    position: relative;
+    height: 12px;
+    margin: 6px 0 3px 0;
+    background: #162447;
+    border: 1px solid #1f4068;
+}
+
+.jev-bar-fill {
+    width: 0%;
+    height: 100%;
+    background: #e43f5a;
+}
+
+.jev-tick {
+    position: absolute;
+    top: -2px;
+    left: 50%;
+    width: 1px;
+    height: 16px;
+    background: #dfe6f3;
+}
+
+.jev-val {
+    color: #dfe6f3;
+}
+
+.jev-read-row {
+    display: grid;
+    grid-template-columns: 1fr 60px 30px;
+    align-items: center;
+    gap: 6px;
+    color: #8fa6c8;
+}
+
+.jev-read-row.is-choice {
+    color: #ffffff;
+    font-weight: bold;
+}
+
+.jev-mini {
+    display: block;
+    height: 6px;
+    background: #162447;
+}
+
+.jev-mini-fill {
+    display: block;
+    width: 0%;
+    height: 100%;
+    background: #1f4068;
+}
+
+.jev-read-row.is-choice .jev-mini-fill {
+    background: #e43f5a;
+}
+
+.jev-read-p {
+    text-align: right;
+}
+
+@media (max-width: 1000px) {
+    .jev-panel {
+        left: 0;
+        right: 0;
+        bottom: 0;
+        top: auto;
+        width: 100%;
+        height: 34px;
+        max-height: 34px;
+        overflow: hidden;
+        border-radius: 0;
+        border-width: 2px 0 0 0;
+    }
+
+    .jev-panel .jev-section {
+        display: none;
+    }
+
+    .jev-panel.is-open {
+        height: auto;
+        max-height: 42vh;
+        overflow-y: auto;
+    }
+
+    .jev-panel.is-open .jev-section {
+        display: block;
+    }
+}

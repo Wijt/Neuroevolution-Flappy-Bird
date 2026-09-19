@@ -5,6 +5,7 @@ class MainMenuScene extends Scene {
         this.playButton;
         this.trainButton;
         this.watchButton;
+        this.jevButton;
     }
 
     start() {
@@ -14,7 +15,7 @@ class MainMenuScene extends Scene {
         this.playButton.addClass("main-menu-button");
         this.playButton.size("15rem", "5rem");
         // this couldn't be done with css because of the p5.js cannot detect the size of the button when positioning it
-        this.playButton.position(innerWidth/2-this.playButton.width/2, innerHeight/2 - this.playButton.height/2 - 120);
+        this.playButton.position(innerWidth/2-this.playButton.width/2, innerHeight/2 - this.playButton.height/2 - 180);
         this.playButton.mouseClicked(() => {
             this.sceneManager.openScene(PLAY_SCENE);
         });
@@ -22,7 +23,7 @@ class MainMenuScene extends Scene {
         this.trainButton = createButton('train');
         this.trainButton.addClass("main-menu-button");
         this.trainButton.size("15rem", "5rem");
-        this.trainButton.position(innerWidth/2 - this.trainButton.width/2, innerHeight/2 - this.trainButton.height/2);
+        this.trainButton.position(innerWidth/2 - this.trainButton.width/2, innerHeight/2 - this.trainButton.height/2 - 60);
         this.trainButton.mouseClicked(() => {
             this.sceneManager.openScene(TRAIN_SCENE);
         });
@@ -30,9 +31,17 @@ class MainMenuScene extends Scene {
         this.watchButton = createButton('watch');
         this.watchButton.addClass("main-menu-button");
         this.watchButton.size("15rem", "5rem"); 
-        this.watchButton.position(innerWidth/2- this.watchButton.width/2, innerHeight/2 + this.watchButton.height/2 + 40);
+        this.watchButton.position(innerWidth/2- this.watchButton.width/2, innerHeight/2 - this.watchButton.height/2 + 60);
         this.watchButton.mouseClicked(() => {
             this.sceneManager.openScene(WATCH_SCENE);
+        });
+
+        this.jevButton = createButton('jev');
+        this.jevButton.addClass("main-menu-button");
+        this.jevButton.size("15rem", "5rem");
+        this.jevButton.position(innerWidth/2 - this.jevButton.width/2, innerHeight/2 - this.jevButton.height/2 + 180);
+        this.jevButton.mouseClicked(() => {
+            this.sceneManager.openScene(JEV_SCENE);
         });
     }
 
@@ -73,5 +82,6 @@ class MainMenuScene extends Scene {
         this.playButton.remove();
         this.trainButton.remove();
         this.watchButton.remove();
+        this.jevButton.remove();
     }
 }
