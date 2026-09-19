@@ -69,21 +69,20 @@ function sceneHarness(fetchImpl) {
 
 const HORIZON = 24;
 
+// v4: three yes/no judgments composed with one threshold (default 0.5).
 const PLAN_ANSWERS = {
-    no_flap: { climb: 'none', timing: 'now' },
-    flap_now: { climb: 'one_flap', timing: 'now' },
-    flap_at_8: { climb: 'one_flap', timing: 'soon' },
-    flap_at_16: { climb: 'one_flap', timing: 'late' },
-    double_flap: { climb: 'two_flaps', timing: 'now' },
-    triple_flap: { climb: 'three_flaps', timing: 'now' }
+    no_flap: { flap_now: 0.1, flap_again: 0.1, flap_later: 0.1 },
+    flap_now: { flap_now: 0.9, flap_again: 0.1, flap_later: 0.1 },
+    flap_at_12: { flap_now: 0.1, flap_again: 0.1, flap_later: 0.9 },
+    double_flap: { flap_now: 0.9, flap_again: 0.9, flap_later: 0.1 }
 };
 
 function answersFor(plan) {
-    const { climb, timing } = PLAN_ANSWERS[plan] || PLAN_ANSWERS.no_flap;
+    const p = PLAN_ANSWERS[plan] || PLAN_ANSWERS.no_flap;
     return {
-        danger: { noul: 0.2 },
-        climb: { choice: climb, probabilities: { none: 0, one_flap: 0, two_flaps: 0, three_flaps: 0, [climb]: 1 }, confidence: 0.9 },
-        timing: { choice: timing, probabilities: { now: 0, soon: 0, late: 0, [timing]: 1 }, confidence: 0.9 }
+        flap_now: { noul: p.flap_now },
+        flap_again: { noul: p.flap_again },
+        flap_later: { noul: p.flap_later }
     };
 }
 
@@ -134,11 +133,11 @@ test('start primes window 0 and waits for it briefly, then applies it without a 
     const y = scene.bird.pos.y;
     for (let i = 0; i < 10; i++) tick();           // ~170 ms: still inside the warm-up hold
     assert.equal(scene.bird.pos.y, y);
-    resolve(jsonResponse(200, answer('flap_at_8', { id: 0 })));
+    resolve(jsonResponse(200, answer('flap_at_12', { id: 0 })));
     await new Promise(r => setImmediate(r));
     await new Promise(r => setImmediate(r));
     tick();
-    assert.equal(scene.currentPlan, 'flap_at_8');
+    assert.equal(scene.currentPlan, 'flap_at_12');
     assert.equal(scene.lateCount, 0);
     assert.equal(scene.requestsSent, 2);            // window 1 was pipelined at commit
 });
@@ -175,15 +174,16 @@ test('a resolved answer for the current window is applied, not late', () => {
     const { scene, tick } = sceneHarness(() => new Promise(() => {}));
     scene.state = 'running';
     scene.pendingResponses[0] = {
-        status: 'resolved', plan: 'flap_at_8', answers: answersFor('flap_at_8'),
+        status: 'resolved', plan: 'flap_at_12', answers: answersFor('flap_at_12'),
         latencyMs: 55, usage: { input_tokens: 400, output_tokens: 10 }
     };
     tick();
-    assert.equal(scene.currentPlan, 'flap_at_8');
+    assert.equal(scene.currentPlan, 'flap_at_12');
     assert.equal(scene.lateCount, 0);
     assert.equal(scene.history[0].late, false);
-    assert.equal(scene.history[0].answers.climb.choice, 'one_flap');
-    assert.equal(scene.history[0].probabilities.one_flap, 1);
+    assert.equal(scene.history[0].answers.flap_now.noul, 0.1);
+    assert.equal(scene.history[0].probabilities.flap_later, 0.9);
+    assert.equal(scene.history[0].threshold, 0.5);
 });
 
 test('stale response is ignored after a reset', async () => {
@@ -228,21 +228,38 @@ test('no requests are sent when dead, paused, not started, or hidden', async () 
     context.document.hidden = false;
 });
 
-test('flap fires at the plan\'s tick', () => {
+test('flap fires at the plan\'s tick (flap_at_12)', () => {
     const { scene, tick } = sceneHarness(() => new Promise(() => {}));
     scene.state = 'running';
     scene.pendingResponses[0] = {
-        status: 'resolved', plan: 'flap_at_8', answers: answersFor('flap_at_8'),
+        status: 'resolved', plan: 'flap_at_12', answers: answersFor('flap_at_12'),
         latencyMs: 10, usage: null
     };
-    // Ticks 0..7: no flap yet, bird keeps falling under gravity from velocity 0.
-    for (let i = 0; i < 8; i++) tick();
+    // Ticks 0..11: no flap yet, bird keeps falling under gravity from velocity 0.
+    for (let i = 0; i < 12; i++) tick();
     assert.ok(scene.bird.velocity > 0, 'bird should be falling before the flap tick');
-    // Tick index 8 is when flap_at_8 fires: jump() sets velocity to -6, then the same
+    // Tick index 12 is when flap_at_12 fires: jump() sets velocity to -6, then the same
     // tick's physics step applies one tick of gravity.
     tick();
     assert.equal(scene.bird.velocity, -6 + GRAVITY_FOR_TEST());
     function GRAVITY_FOR_TEST() { return 0.4; }
+});
+
+test('double_flap fires at tick 0 and tick 12', () => {
+    const { scene, tick } = sceneHarness(() => new Promise(() => {}));
+    scene.state = 'running';
+    scene.pendingResponses[0] = {
+        status: 'resolved', plan: 'double_flap', answers: answersFor('double_flap'),
+        latencyMs: 10, usage: null
+    };
+    // Tick index 0: window 0 commits and double_flap's first flap fires immediately.
+    tick();
+    assert.equal(scene.bird.velocity, -6 + 0.4);
+    // Ticks 1..11: no second flap yet.
+    for (let i = 0; i < 11; i++) tick();
+    // Tick index 12: the second flap of double_flap fires.
+    tick();
+    assert.equal(scene.bird.velocity, -6 + 0.4);
 });
 
 test('request for window k+1 is sent at the start of window k with an advanced state', async () => {
@@ -258,6 +275,19 @@ test('request for window k+1 is sent at the start of window k with an advanced s
     assert.ok(capturedBody, 'expected a request to have been sent');
     assert.equal(capturedBody.id, 1);
     assert.equal(capturedBody.state.pipes[0].left, leftBefore - 2 /* PIPE_SCROOL */ * HORIZON);
+});
+
+test('request body includes the console threshold', async () => {
+    let capturedBody = null;
+    const { scene, tick } = sceneHarness(async (url, opts) => {
+        capturedBody = JSON.parse(opts.body);
+        return new Promise(() => {});
+    });
+    scene.state = 'running';
+    scene.threshold = 0.7;
+    tick();
+    assert.ok(capturedBody, 'expected a request to have been sent');
+    assert.equal(capturedBody.threshold, 0.7);
 });
 
 test('death cancels the in-flight request', async () => {
@@ -293,7 +323,7 @@ test('prompts from the console panel are forwarded in the request body; absent w
     // With a panel stub whose getPrompts() returns an object: it is forwarded as-is.
     // The in-flight request never resolves, so the next request only goes out once its
     // whole window elapses and the late fallback commits it (same as HORIZON ticks below).
-    const customPrompts = { game: 'custom game text', questions: { danger: { instructions: 'custom danger?' } } };
+    const customPrompts = { game: 'custom game text', questions: { flap_now: { instructions: 'custom flap now?' } } };
     scene.panel = {
         getPrompts: () => customPrompts,
         getCap: () => scene.requestCap, getAutoRestart: () => false, getApiKey: () => '',

@@ -43,6 +43,7 @@ class WatchScene extends Scene {
         this.requestCap = 0;
         this.autoRestart = false;
         this.apiKey = '';
+        this.threshold = 0.5;
 
         this.panel = null;
         this.visibilityHandler = null;
@@ -236,6 +237,12 @@ class WatchScene extends Scene {
         return this.panel && this.panel.getPrompts ? this.panel.getPrompts() : null;
     }
 
+    // Yes/no decision threshold (console input); default 0.5.
+    getThreshold() {
+        const t = this.panel && this.panel.getThreshold ? this.panel.getThreshold() : this.threshold;
+        return Number.isFinite(t) ? Math.min(0.99, Math.max(0.01, t)) : 0.5;
+    }
+
     now() {
         return (typeof performance !== 'undefined') ? performance.now() : Date.now();
     }
@@ -406,14 +413,13 @@ class WatchScene extends Scene {
             this.tokensOut += usage.output_tokens || 0;
         }
 
-        // probabilities/confidence kept on the decision record for backward compatibility
-        // with the console UI; derived from the climb judgment.
-        const probabilities = answers && answers.climb ? answers.climb.probabilities : null;
-        const confidence = answers && answers.climb ? answers.climb.confidence : null;
+        // For the console: the three yes-probabilities and the threshold used.
+        const probabilities = answers ? { flap_now: answers.flap_now.noul, flap_again: answers.flap_again.noul, flap_later: answers.flap_later.noul } : null;
+        const confidence = answers ? answers.flap_now.noul : null;
 
         let sensors = null;
         try { sensors = JevContract.buildRequest(state).state; } catch (e) { /* log only */ }
-        const decision = { index: k, plan, answers, probabilities, confidence, latencyMs, late, physicsBest, agree, sensors };
+        const decision = { index: k, plan, answers, probabilities, confidence, threshold: this.getThreshold(), latencyMs, late, physicsBest, agree, sensors };
         this.history.push(decision);
         if (this.history.length > 50) this.history.shift();
 
@@ -575,7 +581,7 @@ class WatchScene extends Scene {
         const fetchOptions = {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ id, state, apiKey, prompts })
+            body: JSON.stringify({ id, state, apiKey, prompts, threshold: this.getThreshold() })
         };
         if (controller) fetchOptions.signal = controller.signal;
 
@@ -652,6 +658,7 @@ class WatchScene extends Scene {
         text(this.bird.score, width / 2, 60);
         pop();
 
+        this.drawRays();
         this.drawForecastOverlay();
 
         if (this.state === 'dead') {
@@ -668,6 +675,26 @@ class WatchScene extends Scene {
             text('Score: ' + this.bird.score, width / 2, height / 2 + 40);
             pop();
         }
+    }
+
+    // The three sensor rays Jev is told about, coloured by what they touch.
+    drawRays() {
+        if (this.state === 'dead' || !this.bird) return;
+        let hits;
+        try { hits = JevContract.rayHits(this.gameState()); } catch (e) { return; }
+        push();
+        strokeWeight(2);
+        for (const ray of hits) {
+            const hit = ray.hit;
+            if (hit.startsWith('the hole')) stroke(88, 239, 145, 200);          // green: clear
+            else if (hit.startsWith('the sky') || hit.startsWith('nothing')) stroke(255, 255, 255, 60);
+            else stroke(255, 92, 92, 220);                                     // red: pipe or ground
+            line(this.bird.pos.x, this.bird.pos.y, ray.x, ray.y);
+            noStroke();
+            fill(hit.startsWith('the hole') ? color(88, 239, 145) : (hit.startsWith('the sky') || hit.startsWith('nothing')) ? color(255, 255, 255, 120) : color(255, 92, 92));
+            ellipse(ray.x, ray.y, 6, 6);
+        }
+        pop();
     }
 
     drawForecastOverlay() {

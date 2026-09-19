@@ -431,3 +431,31 @@ Tests: `test/contract.test.js` (sensor state has no outcome words: assert no `Sa
 `test/server.test.js` (answers forwarded), `test/watch.test.js` (decision record carries
 `answers`). No DOM tests for the console; it must not throw when constructed with the vm
 harness's stub `document` (the scene builds it only in `start()`).
+
+
+---
+
+# v4: three yes/no judgments, one threshold
+
+The 4-way "how many flaps" Choice was replaced. Jev now answers three Nouls in one request
+over the same sensor state (v3 `game/you/hole/pipe/rays/next_hole`):
+
+| id | question (paraphrased) |
+| --- | --- |
+| `flap_now` | Should you flap right now? |
+| `flap_again` | Suppose you flap now. Flap a second time 0.2 s later (climb faster)? |
+| `flap_later` | Suppose you do not flap now. Flap 0.2 s later instead? |
+
+Plans are `no_flap [] · flap_now [0] · flap_at_12 [12] · double_flap [0,12]`.
+Composition with one threshold `T` (console input, default 0.5, sent as `threshold` in
+the request body):
+
+```
+flap_now >= T and flap_again >= T -> double_flap
+flap_now >= T                     -> flap_now
+flap_later >= T                   -> flap_at_12
+otherwise                         -> no_flap
+```
+
+Server response: `{ id, plan, answers: { flap_now:{noul}, flap_again:{noul}, flap_later:{noul} }, threshold, model, usage, latencyMs }`.
+The canvas draws the three rays from the bird (green = hole, red = pipe/ground, faint = nothing).

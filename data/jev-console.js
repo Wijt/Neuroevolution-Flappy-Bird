@@ -1,6 +1,10 @@
 // Judgment console for the Jev watch scene. Plain DOM + inline SVG, no libraries.
 // The scene owns all game/network state; this module only renders what it is told and
 // owns canvas placement (the scene's updateLayout()/restoreCanvasPosition() call into it).
+//
+// v4 contract: three yes/no (noul) questions per window - flap_now, flap_again, flap_later -
+// composed in code with one threshold T. See docs/jev-design.md "v4: three yes/no
+// judgments, one threshold".
 (function (root) {
     const SVGNS = 'http://www.w3.org/2000/svg';
 
@@ -20,25 +24,21 @@
         return node;
     }
 
-    const PLANS = (root.JevPhysics && root.JevPhysics.PLANS) || ['flap_now', 'flap_at_8', 'flap_at_16', 'double_flap', 'triple_flap', 'no_flap'];
+    const PLANS = (root.JevPhysics && root.JevPhysics.PLANS) || ['no_flap', 'flap_now', 'flap_at_12', 'double_flap'];
     const PLAN_LABELS = Object.fromEntries(PLANS.map(p => [p, p.toUpperCase()]));
 
-    // Maps a composed plan to the flap@0 / flap@8 / flap@16 graph nodes it lights up.
-    // (double_flap/triple_flap actually flap on more ticks than these three nodes cover;
-    // this is a display simplification, see docs/jev-design.md GRAPH section.)
+    // Maps a composed plan to the flap@0 / flap@12 graph nodes it lights up.
     const PLAN_FLAP_NODES = {
         no_flap: [],
         flap_now: ['f0'],
-        flap_at_8: ['f8'],
-        flap_at_16: ['f16'],
-        double_flap: ['f0'],
-        triple_flap: ['f0', 'f8', 'f16']
+        flap_at_12: ['f12'],
+        double_flap: ['f0', 'f12']
     };
 
-    const CLIMB_OPTIONS = ['none', 'one_flap', 'two_flaps', 'three_flaps'];
-    const TIMING_OPTIONS = ['now', 'soon', 'late'];
-    const CLIMB_LABELS = { none: 'NONE', one_flap: '1 FLAP', two_flaps: '2 FLAPS', three_flaps: '3 FLAPS' };
-    const TIMING_LABELS = { now: 'NOW', soon: 'SOON', late: 'LATE' };
+    const QUESTION_IDS = ['flap_now', 'flap_again', 'flap_later'];
+    const QUESTION_LABELS = { flap_now: 'flap now?', flap_again: 'flap again?', flap_later: 'flap later?' };
+
+    const DEFAULT_THRESHOLD = 0.5;
 
     class JevConsole {
         constructor(callbacks) {
@@ -52,6 +52,7 @@
 
             document.body.appendChild(this.root);
             this._decisionCount = 0;
+            this._positionMarkers();
         }
 
         // ---- construction ----------------------------------------------------
@@ -108,12 +109,24 @@
             const capLabel = el('label', { text: 'CAP', attrs: { for: 'jev-cap-input' } });
             this.capInput = el('input', { attrs: { type: 'number', id: 'jev-cap-input', min: '0', step: '1' } });
             this.capInput.value = '3000';
+            const thLabel = el('label', { text: 'THRESHOLD', attrs: { for: 'jev-threshold-input' } });
+            this.thresholdInput = el('input', {
+                attrs: { type: 'number', id: 'jev-threshold-input', min: '0.05', max: '0.95', step: '0.05' }
+            });
+            this.thresholdInput.value = String(DEFAULT_THRESHOLD);
+            this._loadStoredThreshold();
+            this.thresholdInput.addEventListener('input', () => {
+                this._saveStoredThreshold();
+                this._positionMarkers();
+            });
             const autoLabel = el('label', { className: 'jev-console-checkbox' });
             this.autoRestartInput = el('input', { attrs: { type: 'checkbox' } });
             autoLabel.appendChild(this.autoRestartInput);
             autoLabel.appendChild(document.createTextNode('AUTO'));
             row2.appendChild(capLabel);
             row2.appendChild(this.capInput);
+            row2.appendChild(thLabel);
+            row2.appendChild(this.thresholdInput);
             row2.appendChild(autoLabel);
             s.appendChild(row2);
 
@@ -160,55 +173,44 @@
             this.planNameEl = el('div', { className: 'jev-console-plan-name', text: '—' });
             s.appendChild(this.planNameEl);
 
-            this.dangerCard = this._buildJudgmentCard(s, 'Danger', 'Will you hit the bottom pipe or ground within half a second?');
-            this.dangerCard.bar = this._buildBarRow(this.dangerCard.body, 'noul', 'YES');
-            this.dangerCard.noText = el('span', { className: 'jev-console-noul', text: '—' });
-            this.dangerCard.body.appendChild(this.dangerCard.noText);
+            this.judgmentCards = {};
+            QUESTION_IDS.forEach(id => { this.judgmentCards[id] = this._buildNoulCard(s, id); });
 
-            this.climbCard = this._buildJudgmentCard(s, 'Climb', 'How much height do you need in the next 0.4 s?');
-            this.climbCard.bars = {};
-            CLIMB_OPTIONS.forEach(k => { this.climbCard.bars[k] = this._buildBarRow(this.climbCard.body, k, CLIMB_LABELS[k]); });
-            this.climbCard.confEl = el('div', { className: 'jev-console-conf', text: 'conf —' });
-            this.climbCard.body.appendChild(this.climbCard.confEl);
-
-            this.timingCard = this._buildJudgmentCard(s, 'Timing', 'If you flap once, when?');
-            this.timingCard.bars = {};
-            TIMING_OPTIONS.forEach(k => { this.timingCard.bars[k] = this._buildBarRow(this.timingCard.body, k, TIMING_LABELS[k]); });
-            this.timingCard.confEl = el('div', { className: 'jev-console-conf', text: 'conf —' });
-            this.timingCard.body.appendChild(this.timingCard.confEl);
-
-            const metaGrid = el('div', { className: 'jev-console-director-grid' });
-            this.confidenceEl = this._metaCell(metaGrid, 'CONF');
-            this.latencyEl = this._metaCell(metaGrid, 'LAT L/A/P95');
-            s.appendChild(metaGrid);
+            this.lateNoteEl = el('div', { className: 'jev-console-late-note', text: 'no answer in time' });
+            this.lateNoteEl.style.display = 'none';
+            s.appendChild(this.lateNoteEl);
 
             return s;
         }
 
-        _buildJudgmentCard(parent, tag, instructions) {
+        _buildNoulCard(parent, id) {
             const card = el('div', { className: 'jev-console-card' });
             const head = el('div', { className: 'jev-console-card-head' });
-            head.appendChild(el('span', { className: 'jev-console-tag', text: tag.toUpperCase() }));
+            head.appendChild(el('span', { className: 'jev-console-tag', text: id.toUpperCase() }));
             card.appendChild(head);
-            card.appendChild(el('div', { className: 'jev-console-instructions', text: instructions }));
+            const instructionsEl = el('div', { className: 'jev-console-instructions', text: '' });
+            card.appendChild(instructionsEl);
             const body = el('div', { className: 'jev-console-card-body' });
+            const bar = this._buildNoulBar(body);
             card.appendChild(body);
             parent.appendChild(card);
-            return { card, body };
+            return { card, instructionsEl, bar };
         }
 
-        _buildBarRow(container, key, label) {
-            const row = el('div', { className: 'jev-console-bar-row' });
-            const lbl = el('span', { className: 'jev-console-bar-label', text: label });
-            const track = el('span', { className: 'jev-console-bar-track' });
+        _buildNoulBar(container) {
+            const row = el('div', { className: 'jev-console-noul-row' });
+            const track = el('span', { className: 'jev-console-bar-track jev-console-noul-track' });
             const fill = el('span', { className: 'jev-console-bar-fill' });
+            const marker = el('span', { className: 'jev-console-bar-marker' });
             track.appendChild(fill);
-            const pct = el('span', { className: 'jev-console-bar-pct', text: '0%' });
-            row.appendChild(lbl);
+            track.appendChild(marker);
+            const pct = el('span', { className: 'jev-console-bar-pct', text: '—' });
+            const verdict = el('span', { className: 'jev-console-verdict', text: '—' });
             row.appendChild(track);
             row.appendChild(pct);
+            row.appendChild(verdict);
             container.appendChild(row);
-            return { row, lbl, fill, pct };
+            return { row, track, fill, marker, pct, verdict };
         }
 
         // ---- prompts (live-editable texts sent to Jev) --------------------------
@@ -336,6 +338,7 @@
             this._saveStoredPrompts(this.appliedPrompts);
             this._refreshModifiedMarks();
             this._updateTokenEstimate();
+            this._syncJudgmentInstructions();
             if (!silent && this.promptStatusEl) {
                 this.promptStatusEl.textContent = 'applied · next request';
                 if (this._promptStatusTimer) clearTimeout(this._promptStatusTimer);
@@ -386,6 +389,20 @@
             } catch (e) { /* ignore: localStorage unavailable */ }
         }
 
+        _loadStoredThreshold() {
+            try {
+                const raw = localStorage.getItem('jev.threshold.v1');
+                if (!raw) return;
+                const n = Number(raw);
+                if (Number.isFinite(n) && n >= 0.05 && n <= 0.95) this.thresholdInput.value = String(n);
+            } catch (e) { /* ignore: localStorage unavailable or corrupt */ }
+        }
+
+        _saveStoredThreshold() {
+            try { localStorage.setItem('jev.threshold.v1', String(this.getThreshold())); }
+            catch (e) { /* ignore: localStorage unavailable */ }
+        }
+
         _updateTokenEstimate() {
             if (!this.promptTokenEl) return;
             if (!root.JevContract || !root.JevContract.buildRequest) { this.promptTokenEl.textContent = ''; return; }
@@ -402,6 +419,23 @@
             } catch (e) {
                 this.promptTokenEl.textContent = '';
             }
+        }
+
+        // Keeps the Judgments cards' instructions text in sync with the applied prompt
+        // overrides (or the defaults, when nothing is overridden).
+        _syncJudgmentInstructions() {
+            if (!this.judgmentCards) return;
+            QUESTION_IDS.forEach(id => {
+                const card = this.judgmentCards[id];
+                if (card) card.instructionsEl.textContent = this._instructionsFor(id);
+            });
+        }
+
+        _instructionsFor(id) {
+            const override = this.appliedPrompts && this.appliedPrompts.questions && this.appliedPrompts.questions[id];
+            if (override && override.instructions) return override.instructions;
+            const def = this.promptDefaults && this.promptDefaults.questions && this.promptDefaults.questions[id];
+            return (def && def.instructions) || '';
         }
 
         // Returns the console-edited prompts object (see jev-contract.js resolvePrompts),
@@ -455,6 +489,8 @@
         }
 
         // ---- graph -------------------------------------------------------------
+        // 6 sensors -> state -> 3 questions -> YES/NO per question -> compose -> plan ->
+        // flap@0 / flap@12 -> bird.
 
         _buildGraph() {
             this.graphNodes = {};
@@ -496,38 +532,34 @@
             addNode('state', X.state, 160, 'state');
             ['you', 'hole', 'pipe', 'rayUp', 'rayFwd', 'rayDown'].forEach(s => addEdge('e-' + s, s, 'state'));
 
-            addNode('qDanger', X.question, 40, 'danger?');
-            addNode('qClimb', X.question, 160, 'climb?');
-            addNode('qTiming', X.question, 280, 'timing?');
-            addEdge('e-state-danger', 'state', 'qDanger');
-            addEdge('e-state-climb', 'state', 'qClimb');
-            addEdge('e-state-timing', 'state', 'qTiming');
+            const QY = { flap_now: 40, flap_again: 160, flap_later: 280 };
+            QUESTION_IDS.forEach(id => {
+                addNode('q-' + id, X.question, QY[id], QUESTION_LABELS[id]);
+                addEdge('e-state-' + id, 'state', 'q-' + id);
+            });
 
-            const dangerOpts = ['yes', 'no'];
-            dangerOpts.forEach((k, i) => addNode('opt-danger-' + k, X.option, 20 + i * 32, k.toUpperCase()));
-            dangerOpts.forEach(k => addEdge('e-danger-' + k, 'qDanger', 'opt-danger-' + k));
-
-            CLIMB_OPTIONS.forEach((k, i) => addNode('opt-climb-' + k, X.option, 100 + i * 32, CLIMB_LABELS[k]));
-            CLIMB_OPTIONS.forEach(k => addEdge('e-climb-' + k, 'qClimb', 'opt-climb-' + k));
-
-            TIMING_OPTIONS.forEach((k, i) => addNode('opt-timing-' + k, X.option, 240 + i * 32, TIMING_LABELS[k]));
-            TIMING_OPTIONS.forEach(k => addEdge('e-timing-' + k, 'qTiming', 'opt-timing-' + k));
+            QUESTION_IDS.forEach(id => {
+                const y0 = QY[id];
+                addNode('opt-' + id + '-yes', X.option, y0 - 16, 'YES');
+                addNode('opt-' + id + '-no', X.option, y0 + 16, 'NO');
+                addEdge('e-' + id + '-yes', 'q-' + id, 'opt-' + id + '-yes');
+                addEdge('e-' + id + '-no', 'q-' + id, 'opt-' + id + '-no');
+            });
 
             addNode('compose', X.compose, 160, 'compose');
-            dangerOpts.forEach(k => addEdge('e-compose-danger-' + k, 'opt-danger-' + k, 'compose'));
-            CLIMB_OPTIONS.forEach(k => addEdge('e-compose-climb-' + k, 'opt-climb-' + k, 'compose'));
-            TIMING_OPTIONS.forEach(k => addEdge('e-compose-timing-' + k, 'opt-timing-' + k, 'compose'));
+            QUESTION_IDS.forEach(id => {
+                ['yes', 'no'].forEach(k => addEdge('e-compose-' + id + '-' + k, 'opt-' + id + '-' + k, 'compose'));
+            });
 
             addNode('plan', X.plan, 160, 'plan: —');
             addEdge('e-compose-plan', 'compose', 'plan');
 
-            addNode('f0', X.flap, 100, 'flap@0');
-            addNode('f8', X.flap, 160, 'flap@8');
-            addNode('f16', X.flap, 220, 'flap@16');
-            ['f0', 'f8', 'f16'].forEach(f => addEdge('e-plan-' + f, 'plan', f));
+            addNode('f0', X.flap, 120, 'flap@0');
+            addNode('f12', X.flap, 200, 'flap@12');
+            ['f0', 'f12'].forEach(f => addEdge('e-plan-' + f, 'plan', f));
 
             addNode('bird', X.bird, 160, 'bird');
-            ['f0', 'f8', 'f16'].forEach(f => addEdge('e-' + f + '-bird', f, 'bird'));
+            ['f0', 'f12'].forEach(f => addEdge('e-' + f + '-bird', f, 'bird'));
         }
 
         _resetGraphHighlights() {
@@ -542,61 +574,36 @@
             }
         }
 
-        _updateGraph(info) {
+        _updateGraph(info, T) {
             this._resetGraphHighlights();
-            const answers = info.answers;
+            const probs = info.probabilities || {};
             const late = !!info.late;
             const glowClass = late ? 'late' : 'active';
 
-            if (answers && answers.danger) {
-                const yesP = Math.max(0, Math.min(1, Number(answers.danger.noul) || 0));
-                const probs = { yes: yesP, no: 1 - yesP };
-                ['yes', 'no'].forEach(k => {
-                    const e = this.graphEdges['e-danger-' + k];
-                    e.setAttribute('opacity', 0.15 + 0.85 * probs[k]);
-                    e.setAttribute('stroke-width', 1 + 4 * probs[k]);
-                });
-                const chosen = yesP >= 0.5 ? 'yes' : 'no';
-                this.graphEdges['e-danger-' + chosen].classList.add(glowClass);
-                this.graphEdges['e-compose-danger-' + chosen].classList.add(glowClass);
-                this.graphNodes['opt-danger-' + chosen].g.classList.add(glowClass);
-            }
-
-            if (answers && answers.climb) {
-                const probs = answers.climb.probabilities || {};
-                CLIMB_OPTIONS.forEach(k => {
-                    const p = Math.max(0, Math.min(1, probs[k] || 0));
-                    const e = this.graphEdges['e-climb-' + k];
-                    e.setAttribute('opacity', 0.15 + 0.85 * p);
-                    e.setAttribute('stroke-width', 1 + 4 * p);
-                });
-                const chosen = answers.climb.choice;
-                if (this.graphEdges['e-climb-' + chosen]) {
-                    this.graphEdges['e-climb-' + chosen].classList.add(glowClass);
-                    this.graphEdges['e-compose-climb-' + chosen].classList.add(glowClass);
-                    this.graphNodes['opt-climb-' + chosen].g.classList.add(glowClass);
+            QUESTION_IDS.forEach(id => {
+                const hasP = Number.isFinite(probs[id]);
+                const yesP = hasP ? Math.max(0, Math.min(1, probs[id])) : 0;
+                const noP = hasP ? 1 - yesP : 0;
+                const eYes = this.graphEdges['e-' + id + '-yes'];
+                const eNo = this.graphEdges['e-' + id + '-no'];
+                eYes.setAttribute('opacity', 0.15 + 0.85 * yesP);
+                eYes.setAttribute('stroke-width', 1 + 4 * yesP);
+                eNo.setAttribute('opacity', 0.15 + 0.85 * noP);
+                eNo.setAttribute('stroke-width', 1 + 4 * noP);
+                if (hasP) {
+                    const chosen = yesP >= T ? 'yes' : 'no';
+                    this.graphEdges['e-state-' + id].classList.add(glowClass);
+                    this.graphNodes['q-' + id].g.classList.add(glowClass);
+                    this.graphEdges['e-' + id + '-' + chosen].classList.add(glowClass);
+                    this.graphEdges['e-compose-' + id + '-' + chosen].classList.add(glowClass);
+                    this.graphNodes['opt-' + id + '-' + chosen].g.classList.add(glowClass);
                 }
-            }
+            });
 
-            if (answers && answers.timing) {
-                const probs = answers.timing.probabilities || {};
-                TIMING_OPTIONS.forEach(k => {
-                    const p = Math.max(0, Math.min(1, probs[k] || 0));
-                    const e = this.graphEdges['e-timing-' + k];
-                    e.setAttribute('opacity', 0.15 + 0.85 * p);
-                    e.setAttribute('stroke-width', 1 + 4 * p);
-                });
-                const chosen = answers.timing.choice;
-                const climbIsOneFlap = answers.climb && answers.climb.choice === 'one_flap';
-                if (climbIsOneFlap && this.graphEdges['e-timing-' + chosen]) {
-                    this.graphEdges['e-timing-' + chosen].classList.add(glowClass);
-                    this.graphEdges['e-compose-timing-' + chosen].classList.add(glowClass);
-                    this.graphNodes['opt-timing-' + chosen].g.classList.add(glowClass);
-                }
-            }
-
-            // compose -> plan -> flap nodes -> bird: always the active/final path.
+            // compose -> plan -> flap nodes -> bird: always the active/final path (a plan
+            // is chosen even on LATE, via the physics fallback).
             this.graphEdges['e-compose-plan'].classList.add(glowClass);
+            this.graphNodes['compose'].g.classList.add(glowClass);
             this.graphNodes['plan'].g.classList.add(glowClass);
             this.graphNodes['plan'].text.textContent = 'plan: ' + (PLAN_LABELS[info.plan] || info.plan || '—');
 
@@ -670,10 +677,26 @@
             return !!this.autoRestartInput.checked;
         }
 
+        // Number input, min 0.05, max 0.95, default 0.5 on anything invalid/out of range.
+        getThreshold() {
+            const n = Number(this.thresholdInput && this.thresholdInput.value);
+            return Number.isFinite(n) && n >= 0.05 && n <= 0.95 ? n : DEFAULT_THRESHOLD;
+        }
+
+        _positionMarkers() {
+            if (!this.judgmentCards) return;
+            const pct = (this.getThreshold() * 100) + '%';
+            QUESTION_IDS.forEach(id => {
+                const card = this.judgmentCards[id];
+                if (card) card.bar.marker.style.left = pct;
+            });
+        }
+
         setDecision(info) {
             this._decisionCount++;
             info = info || {};
             const late = !!info.late;
+            const T = this.getThreshold();
 
             this.planNameEl.textContent = PLAN_LABELS[info.plan] || info.plan || '—';
             this.planNameEl.classList.toggle('jev-late', late);
@@ -684,60 +707,47 @@
                 this.planNameEl.appendChild(badge);
             }
 
-            const answers = info.answers;
+            const probs = info.probabilities || {};
+            this.lateNoteEl.style.display = late ? 'block' : 'none';
 
-            // Danger card.
-            if (answers && answers.danger) {
-                const yesP = Math.max(0, Math.min(1, Number(answers.danger.noul) || 0));
-                this.dangerCard.bar.fill.style.width = (yesP * 100).toFixed(1) + '%';
-                this.dangerCard.bar.fill.classList.toggle('chosen', yesP >= 0.5);
-                this.dangerCard.bar.pct.textContent = Math.round(yesP * 100) + '%';
-                this.dangerCard.noText.textContent = yesP >= 0.5 ? 'YES' : 'NO';
-            } else {
-                this.dangerCard.bar.fill.style.width = '0%';
-                this.dangerCard.bar.pct.textContent = '—';
-                this.dangerCard.noText.textContent = '—';
-            }
-
-            // Climb / timing cards.
-            this._fillJudgmentCard(this.climbCard, CLIMB_OPTIONS, answers && answers.climb);
-            this._fillJudgmentCard(this.timingCard, TIMING_OPTIONS, answers && answers.timing);
-
-            this.confidenceEl.textContent = Number.isFinite(info.confidence) ? Math.round(info.confidence * 100) + '%' : '—';
-            this.latencyEl.textContent =
-                (Number.isFinite(info.latencyMs) ? Math.round(info.latencyMs) : '—') + '/' +
-                (Number.isFinite(info.latencyAvg) ? Math.round(info.latencyAvg) : '—') + '/' +
-                (Number.isFinite(info.latencyP95) ? Math.round(info.latencyP95) : '—');
+            QUESTION_IDS.forEach(id => {
+                const card = this.judgmentCards[id];
+                card.card.classList.toggle('dim', late);
+                const hasP = Number.isFinite(probs[id]);
+                const p = hasP ? Math.max(0, Math.min(1, probs[id])) : null;
+                if (p === null) {
+                    card.bar.fill.style.width = '0%';
+                    card.bar.fill.classList.remove('chosen');
+                    card.bar.pct.textContent = '—';
+                    card.bar.verdict.textContent = '—';
+                    card.bar.verdict.className = 'jev-console-verdict';
+                } else {
+                    const yes = p >= T;
+                    card.bar.fill.style.width = (p * 100).toFixed(1) + '%';
+                    card.bar.fill.classList.toggle('chosen', yes);
+                    card.bar.pct.textContent = Math.round(p * 100) + '%';
+                    card.bar.verdict.textContent = yes ? 'YES' : 'NO';
+                    card.bar.verdict.className = 'jev-console-verdict ' + (yes ? 'yes' : 'no');
+                }
+                card.bar.marker.style.left = (T * 100) + '%';
+            });
 
             this.dirLatEl.textContent = Number.isFinite(info.latencyAvg) ? Math.round(info.latencyAvg) + 'ms' : '—';
 
-            this._updateGraph(info);
-            this._updateStatusLine(info);
+            this._updateGraph(info, T);
+            this._updateStatusLine(info, T);
         }
 
-        _fillJudgmentCard(card, options, answer) {
-            const probs = (answer && answer.probabilities) || {};
-            const chosen = answer && answer.choice;
-            options.forEach(k => {
-                const bar = card.bars[k];
-                const p = Math.max(0, Math.min(1, probs[k] || 0));
-                bar.fill.style.width = (p * 100).toFixed(1) + '%';
-                bar.fill.classList.toggle('chosen', k === chosen);
-                bar.lbl.classList.toggle('chosen', k === chosen);
-                bar.pct.textContent = Math.round(p * 100) + '%';
-            });
-            card.confEl.textContent = 'conf ' + (answer && Number.isFinite(answer.confidence) ? answer.confidence.toFixed(2) : '—');
-        }
-
-        _updateStatusLine(info) {
-            const answers = info.answers;
-            const climb = answers && answers.climb ? CLIMB_LABELS[answers.climb.choice] || answers.climb.choice : '—';
-            const climbP = answers && answers.climb && Number.isFinite(answers.climb.probabilities && answers.climb.probabilities[answers.climb.choice])
-                ? answers.climb.probabilities[answers.climb.choice].toFixed(2) : '—';
-            const dangerP = answers && answers.danger && Number.isFinite(answers.danger.noul) ? answers.danger.noul.toFixed(2) : '—';
+        _updateStatusLine(info, T) {
+            const probs = info.probabilities || {};
+            const fmt = v => Number.isFinite(v) ? v.toFixed(2) : '—';
             const windowNo = Number.isFinite(info.index) ? info.index : this._decisionCount;
             this.statusLineEl.textContent =
-                'GOAL: ' + climb + ' · CLIMB ' + climbP + ' · DANGER ' + dangerP +
+                'PLAN: ' + (PLAN_LABELS[info.plan] || info.plan || '—') +
+                ' · now ' + fmt(probs.flap_now) +
+                ' · again ' + fmt(probs.flap_again) +
+                ' · later ' + fmt(probs.flap_later) +
+                ' · T ' + T.toFixed(2) +
                 ' · #' + windowNo + (info.late ? ' LATE' : '');
             this.statusLineEl.classList.toggle('jev-late', !!info.late);
         }

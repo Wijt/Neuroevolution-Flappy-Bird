@@ -135,9 +135,9 @@ test('advance() matches stepping the real Bird + Pipe classes HORIZON times', ()
         pipes: pipeList.map(p => ({ left: p.topPipe.x1, right: p.topPipe.x2, gapTop: p.topPipe.y2, gapBottom: p.bottomPipe.y1 }))
     };
 
-    const advanced = JevPhysics.advance(state, 'flap_at_8');
+    const advanced = JevPhysics.advance(state, 'flap_at_12');
     for (let t = 0; t < JevPhysics.HORIZON; t++) {
-        if (JevPhysics.FLAP_TICKS.flap_at_8.includes(t)) realBird.jump();
+        if (JevPhysics.FLAP_TICKS.flap_at_12.includes(t)) realBird.jump();
         realBird.update();
         pipeList.forEach(p => p.update());
     }
@@ -185,45 +185,44 @@ test('forecastPlans returns a PlanOutcome per plan with the documented shape', (
 test('bestPlan excludes plans fatal within the window', () => {
     const forecasts = {
         flap_now: { collisionWithinWindow: { tick: 3, with: 'ground' }, collisionIfCoastingAfter: null, offsetFromGapCenterAtEnd: 0 },
-        flap_at_8: { collisionWithinWindow: null, collisionIfCoastingAfter: null, offsetFromGapCenterAtEnd: 5 },
-        flap_at_16: { collisionWithinWindow: null, collisionIfCoastingAfter: { tick: 20, with: 'top pipe' }, offsetFromGapCenterAtEnd: 1 },
+        flap_at_12: { collisionWithinWindow: null, collisionIfCoastingAfter: null, offsetFromGapCenterAtEnd: 5 },
+        double_flap: { collisionWithinWindow: null, collisionIfCoastingAfter: { tick: 20, with: 'top pipe' }, offsetFromGapCenterAtEnd: 1 },
         no_flap: { collisionWithinWindow: { tick: 9, with: 'ground' }, collisionIfCoastingAfter: null, offsetFromGapCenterAtEnd: 0 }
     };
-    assert.equal(JevPhysics.bestPlan(forecasts), 'flap_at_8');
+    assert.equal(JevPhysics.bestPlan(forecasts), 'flap_at_12');
 });
 
 test('bestPlan prefers no coasting collision, then smallest offset', () => {
     const forecasts = {
         flap_now: { collisionWithinWindow: null, collisionIfCoastingAfter: null, offsetFromGapCenterAtEnd: -10 },
-        flap_at_8: { collisionWithinWindow: null, collisionIfCoastingAfter: null, offsetFromGapCenterAtEnd: 2 },
-        flap_at_16: { collisionWithinWindow: null, collisionIfCoastingAfter: { tick: 15, with: 'ground' }, offsetFromGapCenterAtEnd: 0 },
+        flap_at_12: { collisionWithinWindow: null, collisionIfCoastingAfter: null, offsetFromGapCenterAtEnd: 2 },
+        double_flap: { collisionWithinWindow: null, collisionIfCoastingAfter: { tick: 15, with: 'ground' }, offsetFromGapCenterAtEnd: 0 },
         no_flap: { collisionWithinWindow: null, collisionIfCoastingAfter: null, offsetFromGapCenterAtEnd: 3 }
     };
-    assert.equal(JevPhysics.bestPlan(forecasts), 'flap_at_8');
+    assert.equal(JevPhysics.bestPlan(forecasts), 'flap_at_12');
 });
 
 test('bestPlan picks the latest collision tick when every plan is fatal', () => {
     const forecasts = {
         flap_now: { collisionWithinWindow: { tick: 2, with: 'ground' } },
-        flap_at_8: { collisionWithinWindow: { tick: 11, with: 'ground' } },
-        flap_at_16: { collisionWithinWindow: { tick: 5, with: 'top pipe' } },
+        flap_at_12: { collisionWithinWindow: { tick: 11, with: 'ground' } },
+        double_flap: { collisionWithinWindow: { tick: 5, with: 'top pipe' } },
         no_flap: { collisionWithinWindow: { tick: 3, with: 'ground' } }
     };
-    assert.equal(JevPhysics.bestPlan(forecasts), 'flap_at_8');
+    assert.equal(JevPhysics.bestPlan(forecasts), 'flap_at_12');
 });
 
-test('triple_flap fires three jumps and climbs far more than a single flap', () => {
+test('double_flap fires two jumps and climbs further than a single flap', () => {
     const state = makeState();
     const f = JevPhysics.forecastPlans(state);
-    assert.ok(f.triple_flap.endY < f.flap_now.endY - 40, 'three flaps must gain much more height than one');
     assert.ok(f.double_flap.endY < f.flap_now.endY, 'two flaps must gain more height than one');
-    // Parity: advance() with a multi-flap plan equals stepping tick by tick with jumps.
+    // Parity: advance() with the double-flap plan equals stepping tick by tick with jumps.
     let y = state.bird.y, v = state.bird.velocity;
     for (let t = 0; t < JevPhysics.HORIZON; t++) {
-        if (JevPhysics.FLAP_TICKS.triple_flap.includes(t)) v = -state.physics.jumpPower;
+        if (JevPhysics.FLAP_TICKS.double_flap.includes(t)) v = -state.physics.jumpPower;
         if (y < state.world.groundY) { y += v; v += state.physics.gravity; } else { y = state.world.groundY; }
     }
-    const adv = JevPhysics.advance(state, 'triple_flap');
+    const adv = JevPhysics.advance(state, 'double_flap');
     assert.ok(Math.abs(adv.bird.y - y) < 1e-9);
     assert.ok(Math.abs(adv.bird.velocity - v) < 1e-9);
 });

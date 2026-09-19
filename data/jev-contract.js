@@ -1,5 +1,5 @@
-// Builds the TypeSafe request (pure sensor state + three questions) and validates its
-// response, composing the flap plan in code from Jev's judgments.
+// Builds the TypeSafe request (pure sensor state + three yes/no questions) and validates
+// its response, composing the flap plan in code from Jev's judgments with one threshold.
 (function (root) {
     const physics = typeof module !== 'undefined' && module.exports ? require('./jev-physics') : root.JevPhysics;
     const PLANS = physics.PLANS;
@@ -8,100 +8,72 @@
     // descriptions and judges them. Nothing about option outcomes reaches the model -
     // no "Safe", no "CRASH", no bucketed offsets. Code composes the plan afterwards.
     const questions = {
-        danger: {
+        flap_now: {
             type: 'noul',
-            instructions: 'Will you hit the bottom pipe or the ground within the next half second unless you flap?'
-        },
-        climb: {
-            type: 'choice',
             instructions:
-                'How many flaps do you need in the next 0.4 seconds? Look at where the hole is and whether you are rising or falling. ' +
-                'You always fall unless you flap, and one flap only lifts you a little. Too many flaps overshoot into the top pipe; ' +
-                'too few drop you into the bottom pipe. If you are rising, you usually need nothing.',
-            criteria: {
-                none: 'The hole is below you, or you are rising and already above the hole. No flap needed.',
-                one_flap: 'You are falling and the hole is at your height or up to about 60 px above you.',
-                two_flaps: 'The hole is clearly above you (about 60 to 120 px), or a little above you and you are falling fast.',
-                three_flaps: 'The hole is far above you (more than about 120 px), or you are falling fast toward the bottom pipe or the ground.'
-            }
+                'Should you flap right now? Flap when the hole is above you or you are falling toward the bottom pipe or the ground. ' +
+                'Do not flap when the hole is below you or you are rising above it. One flap is a small push upward.'
         },
-        timing: {
-            type: 'choice',
+        flap_again: {
+            type: 'noul',
             instructions:
-                'If you flap only once in the next 0.4 seconds, when should it be? Flap sooner when you are falling fast or the pipe is close; later when you have room.',
-            criteria: {
-                now: 'Flap immediately.',
-                soon: 'Wait a moment (about 0.13 s), then flap.',
-                late: 'Wait longer (about 0.27 s), then flap.'
-            }
+                'Suppose you flap right now. Should you flap a second time 0.2 seconds later, to climb faster? ' +
+                'Yes only if the hole is well above you or you are falling fast; two flaps in a row climb a lot.'
+        },
+        flap_later: {
+            type: 'noul',
+            instructions:
+                'Suppose you do NOT flap right now. Should you flap 0.2 seconds later instead? ' +
+                'Yes if you are only slightly below the hole or will start falling toward it soon.'
         }
     };
 
-    const TIMING_TO_PLAN = { now: 'flap_now', soon: 'flap_at_8', late: 'flap_at_16' };
+    const DEFAULT_THRESHOLD = 0.5;
 
-    const FLAPS_OF = { none: 0, one_flap: 1, two_flaps: 2, three_flaps: 3 };
-    const DANGER_FLOOR = 0.8;
-    const PLAN_OF_FLAPS = { 0: 'no_flap', 2: 'double_flap', 3: 'triple_flap' };
-
-    // Expected number of flaps (probability-weighted), reported for the console only.
-    function expectedFlaps(climb) {
-        const p = climb && climb.probabilities;
-        if (!p) return FLAPS_OF[climb && climb.choice] || 0;
-        let e = 0;
-        for (const key in FLAPS_OF) e += (p[key] || 0) * FLAPS_OF[key];
-        return e;
-    }
-
-    // Median number of flaps: the level where cumulative probability reaches 0.5.
-    // Robust to tails: 76% none / 22% three_flaps is "none" (the mean, 0.69, would round
-    // to one flap and override a clear majority; live play died on exactly that).
-    function medianFlaps(climb) {
-        const p = climb && climb.probabilities;
-        if (!p) return FLAPS_OF[climb && climb.choice] || 0;
-        let cum = 0;
-        for (const key of ['none', 'one_flap', 'two_flaps', 'three_flaps']) {
-            cum += p[key] || 0;
-            if (cum >= 0.5) return FLAPS_OF[key];
-        }
-        return 3;
-    }
-
-    // Code composes the plan from Jev's judgments. Policy, explicit and in one place:
-    //  - flaps = median of Jev's climb distribution;
-    //  - if Jev is clearly sure about danger (>= DANGER_FLOOR) and that gave zero flaps,
-    //    flap once anyway. Live data showed danger sits at 0.45-0.79 for any falling bird,
-    //    so the floor is 0.8: it only fires on a real alarm.
-    // Nothing here looks at physics; only Jev's answers.
-    function composePlan(answers) {
-        let flaps = medianFlaps(answers.climb);
-        const danger = answers.danger && Number.isFinite(answers.danger.noul) ? answers.danger.noul : 0;
-        if (flaps === 0 && danger >= DANGER_FLOOR) flaps = 1;
-        flaps = Math.max(0, Math.min(3, flaps));
-        if (flaps === 1) return TIMING_TO_PLAN[answers.timing && answers.timing.choice] || 'flap_now';
-        return PLAN_OF_FLAPS[flaps];
+    // Code composes the plan from three yes/no judgments with ONE threshold:
+    //   flap_now >= T  and flap_again >= T  -> double_flap  (ticks 0 and 12)
+    //   flap_now >= T  and flap_again <  T  -> flap_now     (tick 0)
+    //   flap_now <  T  and flap_later >= T  -> flap_at_12   (tick 12)
+    //   otherwise                            -> no_flap
+    function composePlan(answers, threshold = DEFAULT_THRESHOLD) {
+        const T = Number.isFinite(threshold) ? Math.min(0.99, Math.max(0.01, threshold)) : DEFAULT_THRESHOLD;
+        const p = id => (answers && answers[id] && Number.isFinite(answers[id].noul)) ? answers[id].noul : 0;
+        if (p('flap_now') >= T) return p('flap_again') >= T ? 'double_flap' : 'flap_now';
+        return p('flap_later') >= T ? 'flap_at_12' : 'no_flap';
     }
 
     function px(n) { return `${Math.round(Math.abs(n))} px`; }
 
     // Three rays from the bird toward the next pipe: straight ahead, ahead-and-up (45 deg),
-    // ahead-and-down (45 deg). Each reports the first thing it touches.
-    function castRay(state, dy) {
+    // ahead-and-down (45 deg). Each reports the first thing it touches and where.
+    function castRayHit(state, dy) {
         const bird = state.bird;
         const pipe = state.pipes[0];
         const groundY = state.world.groundY;
+        let x = bird.x, y = bird.y;
         for (let step = 1; step <= 400; step += 2) {
-            const x = bird.x + step;
-            const y = bird.y + step * dy;
-            if (y >= groundY) return 'the ground';
-            if (y < 0) return 'the sky (too high, nothing there)';
+            x = bird.x + step;
+            y = bird.y + step * dy;
+            if (y >= groundY) return { hit: 'the ground', x, y: groundY };
+            if (y < 0) return { hit: 'the sky (too high, nothing there)', x, y: 0 };
             if (x >= pipe.left && x <= pipe.right) {
-                if (y <= pipe.gapTop) return 'the top pipe';
-                if (y >= pipe.gapBottom) return 'the bottom pipe';
-                return 'the hole - it goes through';
+                if (y <= pipe.gapTop) return { hit: 'the top pipe', x, y };
+                if (y >= pipe.gapBottom) return { hit: 'the bottom pipe', x, y };
+                return { hit: 'the hole - it goes through', x, y };
             }
-            if (x > pipe.right) return 'the hole - it goes through';
+            if (x > pipe.right) return { hit: 'the hole - it goes through', x, y };
         }
-        return 'nothing yet (pipe is far)';
+        return { hit: 'nothing yet (pipe is far)', x, y };
+    }
+    function castRay(state, dy) { return castRayHit(state, dy).hit; }
+
+    // For the canvas overlay: [{ name, x, y, hit }] from the bird's position.
+    function rayHits(state) {
+        return [
+            Object.assign({ name: 'straight ahead' }, castRayHit(state, 0)),
+            Object.assign({ name: 'ahead and up' }, castRayHit(state, -1)),
+            Object.assign({ name: 'ahead and down' }, castRayHit(state, 1))
+        ];
     }
 
     // Direction plus how fast: at gravity 0.4 px/tick^2 a flap sets -6, so |v| > 4 is fast.
@@ -223,41 +195,18 @@
 
     function isProbability(v) { return Number.isFinite(v) && v >= 0 && v <= 1; }
 
-    function validateChoiceAnswer(answer, keys) {
-        if (!answer || answer.type !== 'choice' || !keys.includes(answer.choice) ||
-            !answer.probabilities || typeof answer.probabilities !== 'object' ||
-            !isProbability(answer.confidence)) {
-            throw new Error('Invalid Jev response');
-        }
-        let sum = 0;
-        const probabilities = {};
-        for (const key of keys) {
-            const value = answer.probabilities[key];
-            if (!isProbability(value)) throw new Error('Invalid Jev response');
-            probabilities[key] = value;
-            sum += value;
-        }
-        if (Math.abs(sum - 1) > 0.02) throw new Error('Invalid Jev response');
-        return { choice: answer.choice, probabilities, confidence: answer.confidence };
-    }
-
-    function parseResponse(data) {
+    function parseResponse(data, threshold = DEFAULT_THRESHOLD) {
         const rawAnswers = data && data.answers;
         if (!rawAnswers || typeof rawAnswers !== 'object') throw new Error('Invalid Jev response');
-
-        const dangerAnswer = rawAnswers.danger;
-        if (!dangerAnswer || dangerAnswer.type !== 'noul' || !isProbability(dangerAnswer.noul)) {
-            throw new Error('Invalid Jev response');
+        const answers = {};
+        for (const id in questions) {
+            const answer = rawAnswers[id];
+            if (!answer || answer.type !== 'noul' || !isProbability(answer.noul)) throw new Error('Invalid Jev response');
+            answers[id] = { noul: answer.noul };
         }
-
-        const climb = validateChoiceAnswer(rawAnswers.climb, Object.keys(questions.climb.criteria));
-        const timing = validateChoiceAnswer(rawAnswers.timing, Object.keys(questions.timing.criteria));
-
-        climb.expectedFlaps = Math.round(expectedFlaps(climb) * 100) / 100;
-        const answers = { danger: { noul: dangerAnswer.noul }, climb, timing };
         return {
             answers,
-            plan: composePlan(answers),
+            plan: composePlan(answers, threshold),
             model: data.model,
             usage: data.usage && Number.isFinite(data.usage.input_tokens) && Number.isFinite(data.usage.output_tokens)
                 ? { input_tokens: data.usage.input_tokens, output_tokens: data.usage.output_tokens }
@@ -265,7 +214,7 @@
         };
     }
 
-    const api = { PLANS, questions, buildRequest, parseResponse, composePlan, expectedFlaps, medianFlaps, defaultPrompts, resolvePrompts };
+    const api = { PLANS, questions, DEFAULT_THRESHOLD, buildRequest, parseResponse, composePlan, rayHits, defaultPrompts, resolvePrompts };
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
     else root.JevContract = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

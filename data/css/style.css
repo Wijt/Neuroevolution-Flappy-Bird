@@ -133,6 +133,7 @@ body.jev-watch-open {
     font: inherit;
 }
 .jev-console-row input[type="number"] { width: 70px; }
+.jev-console-row input#jev-threshold-input { width: 60px; }
 .jev-console input[type="checkbox"] { accent-color: #39ff8a; margin-right: 4px; }
 .jev-console-checkbox { display: flex; align-items: center; font-size: 11px; color: #6fd39a; text-transform: uppercase; }
 .jev-console button {
@@ -157,20 +158,32 @@ body.jev-watch-open {
 .jev-console-plan-name.jev-late { color: #ffb347; }
 .jev-console-late-badge { display: inline-block; background: #ffb347; color: #10230f; font-size: 10px; font-weight: 700; letter-spacing: .05em; padding: 2px 6px; margin-left: 8px; vertical-align: middle; }
 
-.jev-console-card { border: 1px solid #1f7a45; padding: 8px; margin-bottom: 8px; }
+.jev-console-card { border: 1px solid #1f7a45; padding: 8px; margin-bottom: 8px; transition: opacity .2s ease; }
+.jev-console-card.dim { opacity: .35; }
 .jev-console-card-head { margin-bottom: 4px; }
 .jev-console-tag { font-size: 10px; letter-spacing: .1em; color: #050a06; background: #39ff8a; padding: 2px 6px; }
 .jev-console-instructions { font-size: 10px; color: #1f7a45; margin: 4px 0 8px; }
 .jev-console-noul { margin-left: 8px; font-weight: 700; color: #39ff8a; }
+.jev-console-late-note { font-size: 11px; color: #ffb347; text-transform: uppercase; letter-spacing: .04em; margin: -2px 0 8px; }
 
 .jev-console-bar-row { display: flex; align-items: center; gap: 8px; font-size: 11px; margin: 3px 0; }
 .jev-console-bar-label { width: 60px; flex: 0 0 auto; color: #6fd39a; }
 .jev-console-bar-label.chosen { color: #39ff8a; font-weight: 700; }
-.jev-console-bar-track { flex: 1 1 auto; height: 8px; background: #010402; border: 1px solid #1f7a45; overflow: hidden; }
-.jev-console-bar-fill { display: block; height: 100%; background: #1f7a45; width: 0%; }
+.jev-console-bar-track { position: relative; flex: 1 1 auto; height: 8px; background: #010402; border: 1px solid #1f7a45; overflow: visible; }
+.jev-console-bar-fill { display: block; height: 100%; background: #1f7a45; width: 0%; overflow: hidden; }
 .jev-console-bar-fill.chosen { background: #39ff8a; }
 .jev-console-bar-pct { width: 36px; flex: 0 0 auto; text-align: right; color: #b8ffd4; }
 .jev-console-conf { font-size: 10px; color: #6fd39a; margin-top: 2px; }
+
+.jev-console-noul-row { display: flex; align-items: center; gap: 8px; font-size: 12px; margin: 3px 0; }
+.jev-console-noul-track { flex: 1 1 auto; height: 10px; }
+.jev-console-bar-marker {
+    position: absolute; top: -2px; bottom: -2px; width: 2px;
+    background: #b8ffd4; opacity: .8; pointer-events: none;
+}
+.jev-console-verdict { width: 30px; flex: 0 0 auto; text-align: right; font-weight: 700; letter-spacing: .04em; color: #1f7a45; }
+.jev-console-verdict.yes { color: #39ff8a; }
+.jev-console-verdict.no { color: #1f7a45; }
 
 .jev-console-sitrep { font-size: 11px; color: #b8ffd4; }
 .jev-console-sitrep-row { display: flex; gap: 6px; margin: 2px 0; }

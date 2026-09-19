@@ -9,30 +9,27 @@ const state = {
     pipes: [{ left: 400, right: 450, gapTop: 260, gapBottom: 385 }]
 };
 
+// v4: three yes/no judgments composed with one threshold (default 0.5).
+//   flap_now >= T && flap_again >= T -> double_flap
+//   flap_now >= T                    -> flap_now
+//   flap_later >= T                  -> flap_at_12
+//   otherwise                        -> no_flap
 const PLAN_ANSWERS = {
-    no_flap: { climb: 'none', timing: 'now' },
-    flap_now: { climb: 'one_flap', timing: 'now' },
-    flap_at_8: { climb: 'one_flap', timing: 'soon' },
-    flap_at_16: { climb: 'one_flap', timing: 'late' },
-    double_flap: { climb: 'two_flaps', timing: 'now' },
-    triple_flap: { climb: 'three_flaps', timing: 'now' }
+    no_flap: { flap_now: 0.1, flap_again: 0.1, flap_later: 0.1 },
+    flap_now: { flap_now: 0.9, flap_again: 0.1, flap_later: 0.1 },
+    flap_at_12: { flap_now: 0.1, flap_again: 0.1, flap_later: 0.9 },
+    double_flap: { flap_now: 0.9, flap_again: 0.9, flap_later: 0.1 }
 };
 
 const answer = plan => {
-    const { climb, timing } = PLAN_ANSWERS[plan] || PLAN_ANSWERS.no_flap;
+    const p = PLAN_ANSWERS[plan] || PLAN_ANSWERS.no_flap;
     return {
         model: 'jev-test',
         usage: { input_tokens: 500, output_tokens: 8 },
         answers: {
-            danger: { type: 'noul', noul: 0.2 },
-            climb: {
-                type: 'choice', choice: climb, confidence: 0.8,
-                probabilities: { none: 0, one_flap: 0, two_flaps: 0, three_flaps: 0, [climb]: 1 }
-            },
-            timing: {
-                type: 'choice', choice: timing, confidence: 0.8,
-                probabilities: { now: 0, soon: 0, late: 0, [timing]: 1 }
-            }
+            flap_now: { type: 'noul', noul: p.flap_now },
+            flap_again: { type: 'noul', noul: p.flap_again },
+            flap_later: { type: 'noul', noul: p.flap_later }
         }
     };
 };
@@ -63,17 +60,16 @@ test('browser key overrides server key; request/response contract reaches TypeSa
     const body = await response.json();
     assert.equal(body.id, 42);
     assert.equal(body.plan, 'flap_now');
-    assert.equal(body.answers.climb.choice, 'one_flap');
-    assert.equal(body.probabilities, undefined);
-    assert.equal(body.confidence, undefined);
+    assert.equal(body.answers.flap_now.noul, 0.9);
+    assert.equal(body.threshold, 0.5);
     assert.deepEqual(body.usage, { input_tokens: 500, output_tokens: 8 });
     assert.equal(sent.url, 'https://api.typesafe.ai/v1/systemone');
     assert.equal(sent.headers.Authorization, 'Bearer browser-secret');
     assert.ok(!sent.body.includes('secret'));
     const sentRequest = JSON.parse(sent.body);
-    assert.equal(sentRequest.questions.danger.type, 'noul');
-    assert.equal(sentRequest.questions.climb.type, 'choice');
-    assert.equal(sentRequest.questions.timing.type, 'choice');
+    assert.equal(sentRequest.questions.flap_now.type, 'noul');
+    assert.equal(sentRequest.questions.flap_again.type, 'noul');
+    assert.equal(sentRequest.questions.flap_later.type, 'noul');
 });
 
 test('server key works when browser key is empty', async t => {
@@ -140,7 +136,7 @@ test('other upstream errors map to 502', async t => {
 
 test('an invalid model answer maps to 502', async t => {
     const bad = answer('flap_now');
-    bad.answers.climb.choice = 'four_flaps';
+    bad.answers.flap_now = { type: 'choice', noul: 0.9 }; // wrong type for a noul question
     const { post } = await app(t, { apiKey: 'key', fetchImpl: async () => Response.json(bad) });
     assert.equal((await post()).status, 502);
 });
@@ -194,11 +190,36 @@ test('the API key is never present in the body sent upstream', async t => {
 test('console prompts reach TypeSafe; unknown keys are dropped', async t => {
     let sent;
     const { post } = await app(t, { apiKey: 'key', fetchImpl: async (url, options) => {
-        sent = JSON.parse(options.body); return Response.json(answer('none'));
+        sent = JSON.parse(options.body); return Response.json(answer('no_flap'));
     } });
-    const response = await post({ id: 1, state, apiKey: '', prompts: { game: 'Custom game text.', questions: { climb: { instructions: 'Custom climb?' }, nope: {} } } });
+    const response = await post({ id: 1, state, apiKey: '', prompts: { game: 'Custom game text.', questions: { flap_now: { instructions: 'Custom flap now?' }, nope: {} } } });
     assert.equal(response.status, 200);
     assert.equal(sent.state.game, 'Custom game text.');
-    assert.equal(sent.questions.climb.instructions, 'Custom climb?');
+    assert.equal(sent.questions.flap_now.instructions, 'Custom flap now?');
     assert.equal(sent.questions.nope, undefined);
+});
+
+test('threshold defaults to 0.5 when omitted and is echoed back', async t => {
+    const { post } = await app(t, { apiKey: 'key', fetchImpl: async () => Response.json(answer('flap_now')) });
+    const body = await (await post({ id: 1, state })).json();
+    assert.equal(body.threshold, 0.5);
+});
+
+test('threshold is forwarded and used to compose the plan', async t => {
+    const { post } = await app(t, { apiKey: 'key', fetchImpl: async () => Response.json(answer('flap_now')) });
+    // answer('flap_now') has flap_now=0.9, flap_again=0.1, flap_later=0.1.
+    // At threshold 0.95 flap_now no longer clears the bar, and flap_later doesn't either.
+    const body = await (await post({ id: 1, state, threshold: 0.95 })).json();
+    assert.equal(body.threshold, 0.95);
+    assert.equal(body.plan, 'no_flap');
+});
+
+test('threshold is clamped to [0.01, 0.99]', async t => {
+    const { post } = await app(t, { apiKey: 'key', fetchImpl: async () => Response.json(answer('flap_now')) });
+    const low = await (await post({ id: 1, state, threshold: -5 })).json();
+    assert.equal(low.threshold, 0.01);
+    const high = await (await post({ id: 1, state, threshold: 5 })).json();
+    assert.equal(high.threshold, 0.99);
+    const notFinite = await (await post({ id: 1, state, threshold: 'nope' })).json();
+    assert.equal(notFinite.threshold, 0.5);
 });

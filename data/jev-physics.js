@@ -8,13 +8,12 @@
     // Each plan is a list of ticks (0-indexed within the window) at which the bird flaps.
     // Single flaps cover fine positioning; the multi-flap plans let the bird climb fast
     // (one flap per 24 ticks can only gain ~34 px per window).
+    // v4: two binary decisions per 24-tick window (flap at tick 0? flap at tick 12?).
     const FLAP_TICKS = {
+        no_flap: [],
         flap_now: [0],
-        flap_at_8: [8],
-        flap_at_16: [16],
-        double_flap: [0, 12],
-        triple_flap: [0, 8, 16],
-        no_flap: []
+        flap_at_12: [12],
+        double_flap: [0, 12]
     };
     const PLANS = Object.keys(FLAP_TICKS);
 

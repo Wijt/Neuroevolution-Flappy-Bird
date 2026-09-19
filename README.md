@@ -25,20 +25,22 @@ ever sent to the local proxy, which forwards it as the `Authorization` header to
 The full design is in [docs/jev-design.md](docs/jev-design.md). Short version:
 
 - **The game never pauses for the network.** Physics runs at a fixed 60 Hz.
-- Time is split into **24-tick windows (400 ms)**. For each window Jev picks one of six
-  plans: `flap_now`, `flap_at_8`, `flap_at_16`, `no_flap`, plus `double_flap` (ticks 0 and
-  12) and `triple_flap` (ticks 0, 8, 16) for fast climbs.
-- **Jev sees only what a player sees.** The request state is a few sentences: whether
-  you are rising or falling, whether the hole is ABOVE or BELOW you and by how much, how
-  far the pipe is in seconds, what three rays from the bird touch (straight ahead, 45°
-  up, 45° down) and where the next hole is. Nothing about option outcomes is sent.
-- Three questions run in parallel in one request: `danger` (Noul: about to hit the bottom
-  pipe or ground?), `climb` (Choice: none / one flap / two flaps / three flaps) and
-  `timing` (Choice: now / soon / late for a single flap). Code composes the plan from
-  `climb` and `timing`. Probabilities from every answer drive the bars in the console and
-  the edge widths in the graph.
+- Time is split into **24-tick windows (400 ms)**. In each window the bird can flap at
+  tick 0, at tick 12, both, or not at all.
+- **Jev sees only what a player sees.** The request state is a few sentences: rising or
+  falling, whether the hole is ABOVE or BELOW you and by how much (with both edges), how
+  far the pipe is in seconds, what three rays from the bird touch (straight ahead, 45° up,
+  45° down; they are drawn on the canvas) and where the next hole is.
+- **Three yes/no questions, one threshold.** In one request Jev answers `flap_now`
+  ("Should you flap right now?"), `flap_again` ("Suppose you flap now; flap again 0.2 s
+  later?") and `flap_later` ("Suppose you do not flap now; flap 0.2 s later instead?").
+  Each comes back as a probability. Code applies a single threshold (console input,
+  default 0.5): now ≥ T and again ≥ T → two flaps; now ≥ T → one flap now; later ≥ T →
+  one flap at 0.2 s; otherwise nothing. No means, medians or hidden rules.
+- The console shows the three probabilities against the threshold, and the graph shows
+  which YES/NO edges were taken. Question texts are editable live in the PROMPTS section.
 - Physics stays in code only for the LATE fallback, the trajectory overlay and the
-  "code would pick" comparison shown in the console.
+  "code would pick" comparison.
 - **Pipelining:** as soon as a plan is committed, the client computes the exact state at
   the start of the *next* window and sends that request immediately, so Jev has the whole
   400 ms to answer. Measured round trip through the proxy is about 250–300 ms. If an

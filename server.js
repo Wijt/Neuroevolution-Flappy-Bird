@@ -111,6 +111,8 @@ function createServer({
                 const state = payload?.state;
                 // Console-edited prompt texts; unknown keys and bad values fall back to defaults.
                 const prompts = payload?.prompts && typeof payload.prompts === 'object' ? payload.prompts : null;
+                // Decision threshold for the yes/no judgments (0.01..0.99); default 0.5.
+                const threshold = Number.isFinite(payload?.threshold) ? Math.min(0.99, Math.max(0.01, payload.threshold)) : JevContract.DEFAULT_THRESHOLD;
                 if (!validateGameState(state)) return json(res, 400, { error: 'Invalid game state.' });
 
                 const keyId = createHash('sha256').update(requestKey).digest('hex');
@@ -159,11 +161,11 @@ function createServer({
                     let upstreamBody;
                     try { upstreamBody = await upstream.json(); } catch { return json(res, 502, { error: 'TypeSafe returned an invalid response.' }); }
                     let result;
-                    try { result = JevContract.parseResponse(upstreamBody); }
+                    try { result = JevContract.parseResponse(upstreamBody, threshold); }
                     catch { return json(res, 502, { error: 'TypeSafe returned an invalid decision.' }); }
 
                     return json(res, 200, {
-                        id, plan: result.plan, answers: result.answers,
+                        id, plan: result.plan, answers: result.answers, threshold,
                         model: result.model, usage: result.usage, latencyMs: Date.now() - started
                     });
                 } catch {
