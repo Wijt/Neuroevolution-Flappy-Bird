@@ -13,6 +13,9 @@ class JevClient {
         this.backoffUntilMs = 0;
         this.backoffStepMs = 0;
 
+        //every request gets a number so the trace can pair a send with its answer
+        this.nextReqId = 0;
+
         this.inbox = [];
         this.controllers = [];
 
@@ -34,12 +37,15 @@ class JevClient {
         return true;
     }
 
-    // Returns true when a request actually went out.
+    // Returns the request id when a request actually went out, 0 otherwise.
     send(state, questions, tag) {
-        if (!this.canSend()) return false;
+        if (!this.canSend()) return 0;
 
         let controller = new AbortController();
         controller.deliberateAbort = false;
+
+        let reqId = ++this.nextReqId;
+        if (tag != null) tag.reqId = reqId;
 
         let startedAt = Date.now();
         let timer = setTimeout(() => {
@@ -75,6 +81,7 @@ class JevClient {
             let latencyMs = Date.now() - startedAt;
 
             this.inbox.push({
+                reqId: reqId,
                 tag: tag,
                 answers: body.answers,
                 usage: usage,
@@ -95,7 +102,7 @@ class JevClient {
             this.noteError(error);
         }).then(done, done);
 
-        return true;
+        return reqId;
     }
 
     noteError(error) {

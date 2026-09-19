@@ -47,7 +47,7 @@ actions is fixed and tiny, Jev chooses among them alone, and code only spaces th
 
 File: `data/jev/scene-translator.js`. Global `JevTranslator`, also `module.exports`.
 
-`JevTranslator.VERSION = "1.2.0"`.
+`JevTranslator.VERSION = "1.3.1"`.
 
 ### Input
 
@@ -97,10 +97,19 @@ Verbatim:
 
 > The bird flies right at constant speed and cannot slow down or turn. Gravity pulls it down
 > constantly. A flap gives one short upward hop, after which it falls again; flapping repeatedly
-> stacks hops upward. Pipes arrive from the right; each has a top and bottom pipe with an opening
-> between them. Touching a pipe, the ground or the ceiling ends the flight.
+> stacks hops upward. A single hop from the middle of an opening carries the bird all the way up
+> into the top pipe, so the bird should only hop when it is below the middle of the opening.
+> Pipes arrive from the right; each has a top and bottom pipe with an opening between them.
+> Touching a pipe, the ground or the ceiling ends the flight.
 
-The last sentence is true in the jev scene only. See Known deviations.
+The ceiling sentence is true in the jev scene only. See Known deviations.
+
+The hop sentence is a measured fact, not a hint. A hop sets the velocity to -6 against a
+gravity of 0.4, so the bird rises about 48 px before it starts falling again. The opening is
+125 px tall and the collision radius is 15 px, so the safe band above the centre is 47 px. A hop
+from the centre ends inside the top pipe. Jev cannot see any of those numbers, and a human
+pilot learns this in the first five seconds of play, so the rules say it in words. Without it,
+lockstep flights died on the first pipe every time by hopping from the middle.
 
 ### Vocabulary and thresholds
 
@@ -157,7 +166,7 @@ groundY: 750, canvasHeight: 800 }` gives:
 
 ```json
 {
-  "rules": "The bird flies right at constant speed and cannot slow down or turn. Gravity pulls it down constantly. A flap gives one short upward hop, after which it falls again; flapping repeatedly stacks hops upward. Pipes arrive from the right; each has a top and bottom pipe with an opening between them. Touching a pipe, the ground or the ceiling ends the flight.",
+  "rules": "The bird flies right at constant speed and cannot slow down or turn. Gravity pulls it down constantly. A flap gives one short upward hop, after which it falls again; flapping repeatedly stacks hops upward. A single hop from the middle of an opening carries the bird all the way up into the top pipe, so the bird should only hop when it is below the middle of the opening. Pipes arrive from the right; each has a top and bottom pipe with an opening between them. Touching a pipe, the ground or the ceiling ends the flight.",
   "bird": {
     "vertical_motion": "falling",
     "place_in_gap": "close to the bottom pipe edge",
@@ -183,8 +192,8 @@ File: `data/jev/jev-questions.js`. Global `JevQuestions`, also `module.exports`.
         type: "choice",
         instructions: "For the next short stretch of flight, which maneuver should the bird make? Flapping is the only way up; not flapping is the only way down.",
         criteria: {
-            let_it_fall: "descend: make no flap and let gravity bring the bird down; the choice when the bird is above the opening, already rising, or close to the ceiling",
-            one_hop: "hold height: one flap that roughly cancels the current fall; the choice when the bird is about level with the opening and falling",
+            let_it_fall: "descend: make no flap and let gravity bring the bird down; the choice when the bird is at or above the middle of the opening, already rising, or close to the ceiling",
+            one_hop: "hold height: one flap that roughly cancels the current fall; the choice when the bird is a little below the middle of the opening and falling",
             two_hops: "climb a little: two flaps in quick succession; the choice when the bird is somewhat below the opening",
             climb_hard: "climb a lot: three flaps in quick succession; the choice when the bird is far below the opening or close to the ground"
         }
@@ -376,7 +385,34 @@ Cases 6, 7, 24, 25 all pass; #19 now `climb_hard` at 0.95 and #25 `let_it_fall` 
 Remaining misses: #3, rising fast in the middle with the pipe far, `one_hop` at 0.48 against
 `let_it_fall`; #10 as before. Both are borderline by design of the case, not model errors
 worth another wording round. 25 requests, 21.6k input tokens, mean latency 386 ms, p95 803 ms.
-This is the version wired into the game.
+
+**v1.3.1, hop physics in the rules.** JSON only, 24/25, mean margin 0.88, gate passed. The
+rules now say that a hop from the middle reaches the top pipe, `one_hop` is for "a little below
+the middle and falling", and `let_it_fall` covers "at or above the middle". Harness cases 17,
+23 and 24 were corrected because their expectations assumed a hop from the centre was fine;
+case 24 now puts the bird a little low so a hop is physically possible. Only #10 remains
+(`climb_hard` at 45 px below, aggressive but defensible). This is the version wired into the
+game.
+
+### Flight log (headless simulator)
+
+`npm run simulate` runs the scene loop against the real API. See harness/simulate.js.
+
+- **Real time, v1.2.0, no warm start.** Dead on the ground at frame 46 with zero answers
+  received. The first request takes 700 to 950 ms cold and the bird free-falls from the centre
+  to the ground in 46 frames. Every flight in the browser died this way.
+- **Real time, v1.3.1, warm start.** Still dead on the ground at frame 46 on both seeds.
+  Latency was 490 to 650 ms, 30 to 40 frames. The physics outrun the round trip; no wording
+  changes that.
+- **Lockstep, v1.2.0, tick 9.** 284 frames, score 0, died by hopping from the centre into the
+  top pipe of the first gap. Readings were right on every tick.
+- **Lockstep, v1.3.1, tick 9.** Scores 1 and 2 on seeds 1 and 2.
+- **Lockstep, v1.3.1, tick 5.** Scores 7 and 8, about 20 s of flight, on seeds 3 and 1; score
+  1 on seed 2. Jev flies when the world waits for it and asks often enough.
+
+The conclusion so far: the description is good enough for Jev to fly. Real time at this
+latency is not flyable at normal game speed, and lockstep is the mode where the pilot is
+actually judged.
 
 ## Known deviations
 
@@ -404,12 +440,87 @@ the prose template. Bump the patch number for wording that does not move a bound
 minor number when a threshold moves or a phrase changes meaning. Bump the major number when the
 state shape or the question set changes.
 
-Current version is 1.2.0. 1.1.0 carried the `next_opening` key rename, the prose change for
+Current version is 1.3.1. 1.1.0 carried the `next_opening` key rename, the prose change for
 being between the pipes, and the `maneuver` question that replaced the `flap` noul. 1.2.0
 made the two extreme `place_in_gap` phrases and all `next_opening` phrases bird-relative and
-reworded the maneuver criteria. By the rule above a question set change is a major bump; these
+reworded the maneuver criteria. 1.3.x added the hop physics sentence to RULES_TEXT and moved
+the `one_hop` / `let_it_fall` boundary to the middle of the opening. By the rule above a question set change is a major bump; these
 stayed at minor because the scene was not wired into the game yet and no calibration of the
 new design had been published. The next question set change bumps the major number.
 
 Every bump means the previous calibration run is void. Re-run `npm run calibrate`, update the
 chosen format line, and add an entry to the calibration log.
+
+## Debug mode
+
+The pilot loop is asynchronous, so the interesting bugs are all about timing: which frame a
+request describes, which frame its answer lands on, how much the world moved in between. None
+of that is visible from the canvas. Debug mode makes it visible and, where it helps, makes it
+stop moving.
+
+### What made it necessary
+
+Three measurements from the first wired-up flights:
+
+- The **first** request takes 700-850 ms. The connection is cold, and nothing in the pipeline is
+  warm. Every later request is far quicker.
+- The bird free-falls from `height/2` to the ground in **46 frames**. That is less than the first
+  request takes, so every early flight died before its first answer ever arrived. The pilot was
+  never the problem; the takeoff was.
+- Steady-state latency in the browser is about **23 frames**. In a headless lockstep run, where
+  the world is frozen while a request is in flight, Jev flew competently with the same
+  vocabulary and the same questions. So the description is good enough; the staleness is what
+  costs lives.
+
+Warm start answers the first two. Lockstep isolates the third: turn it on and any remaining
+mistake belongs to the description, not to the delay.
+
+### Warm start (always on)
+
+`start()` describes the opening scene, sends one request tagged frame 0, and holds everything
+still: the bird hovers at `height/2` with zero velocity, the pipes do not move, there is no
+gravity and the frame counter stays at 0. Status is `waiting`. When the answer lands it becomes
+the first plan and the flight begins on frame 1. If the request fails the scene waits out the
+normal client backoff and asks again; it never takes off blind. Nothing else is sent during the
+wait.
+
+### Keys
+
+Only `JevScene.keyPressed` reads them, so no other scene ever sees them.
+
+| key | what it does |
+| --- | --- |
+| `P` | pause: no frame, no physics, no pipes, no sends, no draining. Answers already in flight land in the inbox and sit there, still fresh, because no frames passed. `draw()` and the panel keep running. |
+| `N` | one frame, while paused |
+| `M` | frames until the next event (a send, a drained answer, a hop, a death), 600 frames at most, then paused again |
+| `L` | lockstep on/off |
+
+`M` stops at a send rather than waiting for its answer, so it can never spin on something that
+has not arrived yet. Press it again once the answer is in and it drains it.
+
+### Lockstep
+
+With `L` on, the scene freezes the moment a request goes out and thaws when its answer is
+drained, then runs normally until the next tick. `maxInFlight` is effectively 1. Latency costs
+zero frames and the wall clock stretches instead. Status is `lockstep` while frozen, `live`
+between requests. A request that errors never answers, so the freeze also lifts when nothing is
+left in flight.
+
+### Trace
+
+The scene keeps an event log, capped at 2000 records, in the same JSONL shape
+`harness/simulate.js` writes: one `header` per run, then `send`, `recv`, `hop` and `death`.
+A death records its cause in the order pipe, ground, ceiling. Every request carries a `reqId`
+from the client, so a `send` and its `recv` can be paired and the latency read in both frames
+and milliseconds. A restart appends a new header rather than clearing the log, so several
+flights can be compared in one file.
+
+The panel shows the last 12 records formatted like the simulator's timeline, newest at the
+bottom, and the **download trace** button saves the whole log as
+`jev-trace-<runId>-<timestamp>.jsonl`. A browser trace and a headless one can then be read side
+by side, or diffed.
+
+### Status
+
+The panel dot and label show one of `waiting`, `live`, `paused`, `lockstep`, `hidden`,
+`backoff`, `dead`. Death still waits for a click, space or enter, as before.

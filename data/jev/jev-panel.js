@@ -42,9 +42,114 @@ const JEV_META_ROWS = [
     { key: "errors", label: "errors" }
 ];
 
+//how many trace lines the panel keeps on screen, the log itself is much longer
+const JEV_TRACE_SHOWN = 12;
+
+//the short maneuver names the harness timeline uses
+const JEV_MANEUVER_SHORT = {
+    let_it_fall: "fall",
+    one_hop: "1hop",
+    two_hops: "2hop",
+    climb_hard: "climb"
+};
+
+//#region trace formatting
+// Same shapes the harness prints, so a browser trace and a headless one line up.
+function jevFrameTag(frame) {
+    let s = String(frame);
+    while (s.length < 4) s = "0" + s;
+    return "f" + s;
+}
+
+function jevPad(text, width) {
+    let s = String(text);
+    while (s.length < width) s = s + " ";
+    return s;
+}
+
+function jevPadLeft(text, width) {
+    let s = String(text);
+    while (s.length < width) s = " " + s;
+    return s;
+}
+
+function jevSigned(n) {
+    let r = Math.round(n);
+    return (r >= 0 ? "+" : "") + r;
+}
+
+//probabilities read better without the leading zero: .61
+function jevProb(p) {
+    let n = Number(p);
+    if (!isFinite(n)) return "n/a";
+    let text = n.toFixed(2);
+    return text.charAt(0) === "0" ? text.slice(1) : text;
+}
+
+function jevProbList(probabilities) {
+    return "[" + JEV_MANEUVER_OPTIONS.map(option => {
+        return JEV_MANEUVER_SHORT[option] + " " +
+            jevProb(probabilities != null ? probabilities[option] : null);
+    }).join(" ") + "]";
+}
+
+// one record -> one or two lines, the second one being the phrases we sent
+function jevTraceLines(record) {
+    if (record == null) return [];
+
+    if (record.t === "header") {
+        return ["-- run " + record.runId +
+            (record.lockstep ? " lockstep" : " live") +
+            " warm start, tick " + record.tick +
+            ", translator " + record.translator];
+    }
+
+    if (record.t === "send") {
+        let fields = record.state || {};
+        let head = jevFrameTag(record.frame) + " send " + jevPad("#" + record.reqId, 4) +
+            " y=" + jevPadLeft(Math.round(record.birdY), 3) +
+            " v=" + jevPadLeft(Number(record.vel).toFixed(1), 5) +
+            " gap=" + (record.gapCenter == null ? "-" : Math.round(record.gapCenter)) +
+            " pipe=" + jevPadLeft(record.pipeX1 == null ? "-" : jevSigned(record.pipeX1 - BIRD_X), 5);
+
+        let phrases = [fields.vertical_motion, fields.place_in_gap, fields.distance]
+            .map(phrase => phrase != null ? phrase : "-")
+            .join(" | ");
+
+        return [head, "        " + phrases];
+    }
+
+    if (record.t === "recv") {
+        let choice = record.choice || "?";
+        let p = (record.probs != null && record.choice != null) ? record.probs[record.choice] : null;
+        let latencyFrames = (record.sentFrame != null) ? (record.frame - record.sentFrame) : "?";
+
+        return [jevFrameTag(record.frame) + " recv " + jevPad("#" + record.reqId, 4) +
+            " (" + latencyFrames + "f, " + record.latencyMs + "ms)" +
+            " -> " + choice + " " + jevProb(p) +
+            " " + jevProbList(record.probs) +
+            " danger " + (record.danger == null ? "-" : Number(record.danger).toFixed(1)) +
+            " y=" + Math.round(record.birdY) +
+            " v=" + Number(record.vel).toFixed(1)];
+    }
+
+    if (record.t === "hop") {
+        return [jevFrameTag(record.frame) + " hop (" + record.hopsLeft + " left)"];
+    }
+
+    if (record.t === "death") {
+        return [jevFrameTag(record.frame) + " DEATH " + (record.cause || "?") +
+            " score " + record.score];
+    }
+
+    return [JSON.stringify(record)];
+}
+//#endregion
+
 class JevPanel {
-    constructor(getRect) {
+    constructor(getRect, getTraceFile) {
         this.getRect = getRect;
+        this.getTraceFile = getTraceFile;
         this.destroyed = false;
         this.cache = {};
 
@@ -77,9 +182,19 @@ class JevPanel {
         title.textContent = "JEV PILOT";
         header.appendChild(title);
 
+        let state = document.createElement("span");
+        state.className = "jev-state";
+
+        this.statusLabel = document.createElement("span");
+        this.statusLabel.className = "jev-status";
+        this.statusLabel.textContent = "waiting";
+        state.appendChild(this.statusLabel);
+
         this.dot = document.createElement("span");
         this.dot.className = "jev-dot";
-        header.appendChild(this.dot);
+        state.appendChild(this.dot);
+
+        header.appendChild(state);
 
         header.addEventListener("click", () => {
             this.root.classList.toggle("is-open");
@@ -145,6 +260,30 @@ class JevPanel {
             this.metaNodes[row.key] = value;
         });
         this.root.appendChild(this.wrap(meta));
+        //#endregion
+
+        //#region trace
+        this.root.appendChild(this.makeTitle("trace"));
+
+        let traceBox = document.createElement("div");
+
+        let legend = document.createElement("div");
+        legend.className = "jev-legend";
+        legend.textContent = "P pause  N step  M next event  L lockstep";
+        traceBox.appendChild(legend);
+
+        this.traceLog = document.createElement("div");
+        this.traceLog.className = "jev-trace";
+        traceBox.appendChild(this.traceLog);
+
+        this.downloadButton = document.createElement("button");
+        this.downloadButton.className = "jev-download";
+        this.downloadButton.type = "button";
+        this.downloadButton.textContent = "download trace";
+        this.downloadButton.addEventListener("click", () => this.downloadTrace());
+        traceBox.appendChild(this.downloadButton);
+
+        this.root.appendChild(this.wrap(traceBox));
         //#endregion
 
         document.body.appendChild(this.root);
@@ -267,6 +406,7 @@ class JevPanel {
         if (this.cache.status !== view.status) {
             this.cache.status = view.status;
             this.root.setAttribute("data-status", view.status);
+            this.statusLabel.textContent = view.status;
         }
 
         //#region scene fields
@@ -303,6 +443,50 @@ class JevPanel {
             this.setText("m:" + row.key, this.metaNodes[row.key], value);
         });
         //#endregion
+
+        //#region trace
+        this.updateTrace(view.trace);
+        //#endregion
+    }
+
+    // The log only ever grows, so its sequence number is enough to know whether
+    // anything happened; nothing touches the DOM on a quiet frame.
+    updateTrace(trace) {
+        if (trace == null) return;
+        if (this.cache.traceSeq === trace.seq) return;
+        this.cache.traceSeq = trace.seq;
+
+        let entries = trace.entries || [];
+        let recent = entries.slice(Math.max(0, entries.length - JEV_TRACE_SHOWN));
+
+        let lines = [];
+        recent.forEach(record => {
+            jevTraceLines(record).forEach(line => lines.push(line));
+        });
+
+        this.traceLog.textContent = lines.join("\n");
+        //newest at the bottom, so keep the view pinned there
+        this.traceLog.scrollTop = this.traceLog.scrollHeight;
+    }
+
+    downloadTrace() {
+        if (this.getTraceFile == null) return;
+
+        let file = this.getTraceFile();
+        if (file == null || file.text == null) return;
+
+        let blob = new Blob([file.text], { type: "application/x-ndjson" });
+        let url = URL.createObjectURL(blob);
+
+        let link = document.createElement("a");
+        link.href = url;
+        link.download = file.name;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+
+        //the blob would otherwise stay alive for the whole session
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
 
     destroy() {

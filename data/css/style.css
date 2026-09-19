@@ -90,6 +90,19 @@ body {
     user-select: none;
 }
 
+.jev-state {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.jev-status {
+    color: #8fa6c8;
+    letter-spacing: 0.06em;
+    font-weight: normal;
+    text-transform: lowercase;
+}
+
 .jev-dot {
     width: 10px;
     height: 10px;
@@ -101,6 +114,9 @@ body {
 .jev-panel[data-status="dead"] .jev-dot { background: #e43f5a; }
 .jev-panel[data-status="hidden"] .jev-dot { background: #8fa6c8; }
 .jev-panel[data-status="backoff"] .jev-dot { background: #e8a33d; }
+.jev-panel[data-status="waiting"] .jev-dot { background: #6fc2d0; }
+.jev-panel[data-status="paused"] .jev-dot { background: #c8b3ff; }
+.jev-panel[data-status="lockstep"] .jev-dot { background: #4f8a8b; }
 
 .jev-title {
     margin-top: 10px;
@@ -166,6 +182,45 @@ body {
 
 .jev-read + .jev-val {
     margin-top: 4px;
+}
+
+.jev-legend {
+    margin: 4px 0 2px 0;
+    color: #6f86a8;
+    letter-spacing: 0.04em;
+}
+
+.jev-trace {
+    max-height: 180px;
+    overflow: auto;
+    padding: 4px 6px;
+
+    background: #10101f;
+    border: 1px solid #1f4068;
+
+    color: #b9c7de;
+    font-family: "Consolas", "Menlo", monospace;
+    font-size: 10px;
+    line-height: 1.35;
+    white-space: pre;
+}
+
+.jev-download {
+    margin-top: 6px;
+    padding: 3px 8px;
+
+    background: #1f4068;
+    border: 1px solid #2c5a8f;
+    border-radius: 4px;
+
+    color: #dfe6f3;
+    font-family: inherit;
+    font-size: 11px;
+    cursor: pointer;
+}
+
+.jev-download:hover {
+    background: #2c5a8f;
 }
 
 @media (max-width: 1000px) {
