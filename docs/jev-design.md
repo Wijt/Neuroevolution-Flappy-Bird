@@ -58,7 +58,7 @@ Jev (one Choice question: which 24-tick plan)
   discard the answer when it arrives. No override of an answer that did arrive: what Jev
   picks is what the bird does.
 - Window 0 has nothing to pipeline from: Start sends request 0 immediately and holds the
-  first tick for at most 600 ms until it arrives (`WatchScene.WARMUP_MS`).
+  first tick for at most 1.5 s until it arrives (`WatchScene.WARMUP_MS`).
 - Pausing does not abort the in-flight request (already paid for); it is reused on resume.
 - Request rate ≈ 2.5/s (150/min) while alive, ~1,350 input tokens per request. Configurable via `HORIZON`.
 - **No requests when:** bird dead, game paused, not started, tab hidden

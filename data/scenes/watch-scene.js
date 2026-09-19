@@ -698,6 +698,6 @@ class WatchScene extends Scene {
 }
 
 // Longest the first tick waits for Jev's answer to window 0 before starting anyway.
-WatchScene.WARMUP_MS = 600;
+WatchScene.WARMUP_MS = 1500;
 
 if (typeof module !== 'undefined' && module.exports) module.exports = WatchScene;

@@ -146,7 +146,7 @@ test('start primes window 0 and waits for it briefly, then applies it without a 
 test('warm-up hold is bounded; the game starts anyway with a late fallback', () => {
     const { scene, tick, context } = sceneHarness(() => new Promise(() => {}));
     scene.handleStartClick();
-    for (let i = 0; i < 60; i++) tick();            // > WARMUP_MS
+    for (let i = 0; i < 120; i++) tick();           // > WARMUP_MS (1.5 s)
     assert.ok(scene.history.length >= 1);
     assert.equal(scene.history[0].late, true);
 });
