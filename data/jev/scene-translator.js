@@ -2,7 +2,7 @@
 // Turns raw numbers from the game loop into a small, fixed vocabulary.
 // No p5 globals, no DOM, no width/height. Safe to require() from Node.
 var JevTranslator = (function () {
-    var VERSION = "1.3.1";
+    var VERSION = "1.4.0";
 
     var RULES_TEXT = "The bird flies right at constant speed and cannot slow down or turn. Gravity pulls it down constantly. A flap gives one short upward hop, after which it falls again; flapping repeatedly stacks hops upward. A single hop from the middle of an opening carries the bird all the way up into the top pipe, so the bird should only hop when it is below the middle of the opening. Pipes arrive from the right; each has a top and bottom pipe with an opening between them. Touching a pipe, the ground or the ceiling ends the flight.";
 
@@ -17,14 +17,17 @@ var JevTranslator = (function () {
     }
 
     // offset = birdY - gapCenter, positive means the bird is below the gap centre.
+    // Below the middle the bands are sized in hops (~46 px each) because that is the
+    // unit the pilot acts in: one hop from "one hop below" lands in the middle.
     function placeInGap(offset) {
-        if (Math.abs(offset) <= 15) return "in the middle of the gap";
+        if (Math.abs(offset) <= 10) return "in the middle of the gap";
         if (offset < -50) return "far above the opening, in front of the top pipe";
         if (offset <= -35) return "close to the top pipe edge";
         if (offset < 0) return "a little above the middle";
-        if (offset > 50) return "far below the opening, in front of the bottom pipe";
-        if (offset >= 35) return "close to the bottom pipe edge";
-        return "a little below the middle";
+        if (offset <= 40) return "a little below the middle";
+        if (offset <= 80) return "about one hop below the middle, near the bottom pipe";
+        if (offset <= 125) return "about two hops below the opening, in front of the bottom pipe";
+        return "several hops below the opening, far under it";
     }
 
     function lastFlap(frames) {

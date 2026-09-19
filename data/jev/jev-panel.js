@@ -39,7 +39,8 @@ const JEV_META_ROWS = [
     { key: "tokens", label: "tokens" },
     { key: "latency", label: "last latency" },
     { key: "discarded", label: "discarded" },
-    { key: "errors", label: "errors" }
+    { key: "errors", label: "errors" },
+    { key: "speed", label: "speed" }
 ];
 
 //how many trace lines the panel keeps on screen, the log itself is much longer

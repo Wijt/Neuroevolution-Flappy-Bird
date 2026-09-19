@@ -86,6 +86,7 @@ function parseArgs(argv) {
         maxInFlight: 2,
         warmStart: true,
         lockstep: false,
+        timeScale: 1,
         height: DEFAULT_HEIGHT,
         width: null
     };
@@ -97,6 +98,7 @@ function parseArgs(argv) {
         "--tick": "tick",
         "--tick-lockstep": "tickLockstep",
         "--max-in-flight": "maxInFlight",
+        "--time-scale": "timeScale",
         "--height": "height",
         "--width": "width"
     };
@@ -154,6 +156,7 @@ function parseArgs(argv) {
     if (opts.tickLockstep === null) opts.tickLockstep = opts.tick;
     if (opts.tickLockstep < 1) opts.tickLockstep = 1;
     if (opts.maxInFlight < 1) opts.maxInFlight = 1;
+    if (!(opts.timeScale >= 1)) opts.timeScale = 1;
     // a frozen world can only ever have one request outstanding
     if (opts.lockstep) opts.maxInFlight = 1;
 
@@ -251,10 +254,11 @@ class Bird {
         this.velocity -= BIRD_JUMP_POWER;
     }
 
-    update(height) {
+    update(height, dt) {
+        dt = dt || 1;
         if (this.pos.y < height - GROUND_HEIGHT) {
-            this.pos.y += this.velocity;
-            this.velocity += GRAVITY;
+            this.pos.y += this.velocity * dt;
+            this.velocity += GRAVITY * dt;
         } else {
             this.pos.y = height - GROUND_HEIGHT;
         }
@@ -293,8 +297,8 @@ class Pipe {
         };
     }
 
-    update() {
-        this.pos.x -= this.velocity;
+    update(dt) {
+        this.pos.x -= this.velocity * (dt || 1);
 
         if (this.pos.x < -this.width / 2) {
             const pipes = this.world.pipes;
@@ -605,7 +609,10 @@ class SimRun {
         this.nextPipe = null;
 
         this.lockstep = opts.lockstep === true;
-        this.tick = this.lockstep ? opts.tickLockstep : opts.tick;
+        // slow game time: the world runs timeScale times slower, cadence stays in game time
+        this.timeScale = opts.timeScale;
+        this.dt = 1 / this.timeScale;
+        this.tick = (this.lockstep ? opts.tickLockstep : opts.tick) * this.timeScale;
 
         this.frame = 0;
         this.runId = runIndex + 1;
@@ -635,6 +642,7 @@ class SimRun {
             lockstep: this.lockstep,
             warmStart: opts.warmStart === true,
             tick: this.tick,
+            timeScale: this.timeScale,
             maxInFlight: opts.maxInFlight,
             maxFrames: opts.maxFrames,
             height: this.height,
@@ -674,7 +682,7 @@ class SimRun {
             this.bird.jump();
             this.framesSinceFlap = 0;
             this.hopsRemaining--;
-            this.nextHopFrame = this.frame + JevQuestions.HOP_SPACING_FRAMES;
+            this.nextHopFrame = this.frame + JevQuestions.HOP_SPACING_FRAMES * this.timeScale;
             this.hops++;
 
             this.write({ t: "hop", frame: this.frame, hopsLeft: this.hopsRemaining });
@@ -683,11 +691,12 @@ class SimRun {
 
         this.framesSinceFlap++;
 
+        const dt = this.dt;
         this.pipes.forEach(function (pipe) {
-            pipe.update();
+            pipe.update(dt);
         });
 
-        this.bird.update(this.height);
+        this.bird.update(this.height, this.dt);
 
         this.nextPipe = this.selectNextPipe();
 
@@ -774,7 +783,7 @@ class SimRun {
             birdY: this.bird.pos.y,
             birdVelocity: this.bird.velocity,
             birdRadius: JEV_COLLISION_R,
-            framesSinceFlap: this.framesSinceFlap,
+            framesSinceFlap: this.framesSinceFlap / this.timeScale,
             nextPipe: {
                 x1: this.nextPipe.topPipe.x1,
                 x2: this.nextPipe.topPipe.x2,

@@ -14,9 +14,9 @@ var JevQuestions = (function () {
                 instructions: "For the next short stretch of flight, which maneuver should the bird make? Flapping is the only way up; not flapping is the only way down.",
                 criteria: {
                     let_it_fall: "descend: make no flap and let gravity bring the bird down; the choice when the bird is at or above the middle of the opening, already rising, or close to the ceiling",
-                    one_hop: "hold height: one flap that roughly cancels the current fall; the choice when the bird is a little below the middle of the opening and falling",
-                    two_hops: "climb a little: two flaps in quick succession; the choice when the bird is somewhat below the opening",
-                    climb_hard: "climb a lot: three flaps in quick succession; the choice when the bird is far below the opening or close to the ground"
+                    one_hop: "one flap, lifting the bird by about one hop; the choice when the bird is a little below the middle and falling, or about one hop below the middle",
+                    two_hops: "two flaps in quick succession, lifting the bird by about two hops; the choice when the bird is about two hops below the opening",
+                    climb_hard: "three flaps in quick succession, lifting the bird by about three hops; the choice when the bird is several hops below the opening or close to the ground"
                 }
             },
             read: {

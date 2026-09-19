@@ -47,7 +47,7 @@ actions is fixed and tiny, Jev chooses among them alone, and code only spaces th
 
 File: `data/jev/scene-translator.js`. Global `JevTranslator`, also `module.exports`.
 
-`JevTranslator.VERSION = "1.3.1"`.
+`JevTranslator.VERSION = "1.4.0"`.
 
 ### Input
 
@@ -118,7 +118,7 @@ Every bucket set is exhaustive. No input falls through.
 | Field | Phrases in order | Thresholds |
 |---|---|---|
 | `vertical_motion` (v px/frame, negative is up) | shooting upward from a flap / still rising / hanging at the top of its hop / starting to fall / falling / dropping fast | v <= -4 / -4 < v <= -1 / -1 < v < 1 / 1 <= v < 3 / 3 <= v < 6 / v >= 6 |
-| `place_in_gap` (off = birdY - gapCenter, positive is below) | far above the opening, in front of the top pipe / close to the top pipe edge / a little above the middle / in the middle of the gap / a little below the middle / close to the bottom pipe edge / far below the opening, in front of the bottom pipe | off < -50 / -50 to -35 / -35 to -15 / abs(off) <= 15 / 15 to 35 / 35 to 50 / off > 50 |
+| `place_in_gap` (off = birdY - gapCenter, positive is below) | far above the opening, in front of the top pipe / close to the top pipe edge / a little above the middle / in the middle of the gap / a little below the middle / about one hop below the middle, near the bottom pipe / about two hops below the opening, in front of the bottom pipe / several hops below the opening, far under it | off < -50 / -50 to -35 / -35 to -10 / abs(off) <= 10 / 10 to 40 / 40 to 80 / 80 to 125 / off > 125 |
 | `last_flap` (frames since last flap) | flapped just now / flapped a moment ago / has not flapped recently | < 6 / 6 to 20 / > 20 |
 | `surroundings` | the ground is close below / the ceiling is close above / open sky above and below | groundY - (birdY + r) < 60, checked first / birdY - r < 60 / otherwise |
 | `pipe_ahead.distance` (d = x1 - (birdX + r)) | between the pipes right now / right in front of the bird / close ahead / some distance ahead / far ahead | x1 <= birdX <= x2 / d < 40 / 40 to 100 / 100 to 200 / d >= 200 |
@@ -193,9 +193,9 @@ File: `data/jev/jev-questions.js`. Global `JevQuestions`, also `module.exports`.
         instructions: "For the next short stretch of flight, which maneuver should the bird make? Flapping is the only way up; not flapping is the only way down.",
         criteria: {
             let_it_fall: "descend: make no flap and let gravity bring the bird down; the choice when the bird is at or above the middle of the opening, already rising, or close to the ceiling",
-            one_hop: "hold height: one flap that roughly cancels the current fall; the choice when the bird is a little below the middle of the opening and falling",
-            two_hops: "climb a little: two flaps in quick succession; the choice when the bird is somewhat below the opening",
-            climb_hard: "climb a lot: three flaps in quick succession; the choice when the bird is far below the opening or close to the ground"
+            one_hop: "one flap, lifting the bird by about one hop; the choice when the bird is a little below the middle and falling, or about one hop below the middle",
+            two_hops: "two flaps in quick succession, lifting the bird by about two hops; the choice when the bird is about two hops below the opening",
+            climb_hard: "three flaps in quick succession, lifting the bird by about three hops; the choice when the bird is several hops below the opening or close to the ground"
         }
     },
     read: {
@@ -263,7 +263,8 @@ expected, and a newer answer simply replaces the rest of the plan.
 
 ## Request loop
 
-- Cadence: one attempt every 9 frames, so about 6 to 7 attempts per second at 60 fps.
+- Cadence: one attempt every `JEV_TICK_EVERY` game frames (5 as shipped). With the jev world
+  at 1/4 speed that is one attempt every 20 draw frames, about 3 per second.
 - Maximum 2 requests in flight. `client.canSend()` is false above that.
 - Gates, all required before sending: the bird is alive, the jev scene is the active scene,
   `document.visibilityState === "visible"`, a description exists, and 9 frames have passed
@@ -391,8 +392,18 @@ rules now say that a hop from the middle reaches the top pipe, `one_hop` is for 
 the middle and falling", and `let_it_fall` covers "at or above the middle". Harness cases 17,
 23 and 24 were corrected because their expectations assumed a hop from the centre was fine;
 case 24 now puts the bird a little low so a hop is physically possible. Only #10 remains
-(`climb_hard` at 45 px below, aggressive but defensible). This is the version wired into the
-game.
+(`climb_hard` at 45 px below, aggressive but defensible).
+
+**v1.4.0, depth below the opening in hop units.** JSON only, 25/25, mean margin 0.95. The
+slow-time traces showed the last flaw: below the middle the vocabulary had only "a little
+below", "close to the bottom edge" and "far below", while two hops lift about 85 px and three
+about 125 px. From 55 px below, "climb a lot" overshoots into the top pipe; from 150 px below
+it is exactly right, and Jev could not tell the two apart. The bands below the middle are now
+"a little below" (10 to 40), "about one hop below" (40 to 80), "about two hops below" (80 to
+125) and "several hops below" (over 125), and each maneuver criterion names the depth it is
+for. The middle band narrowed to 10 px so a hop from "in the middle" is never asked for.
+Harness cases 4, 8, 10, 13 and 19 had their expectations aligned with the hop bands. This is
+the version wired into the game.
 
 ### Flight log (headless simulator)
 
@@ -410,9 +421,16 @@ game.
 - **Lockstep, v1.3.1, tick 5.** Scores 7 and 8, about 20 s of flight, on seeds 3 and 1; score
   1 on seed 2. Jev flies when the world waits for it and asks often enough.
 
-The conclusion so far: the description is good enough for Jev to fly. Real time at this
-latency is not flyable at normal game speed, and lockstep is the mode where the pilot is
-actually judged.
+- **Slow time, v1.3.1.** Scale 2 or 3 with tick 9: still dead at the first pipe, because the
+  decision loop (tick plus latency) was about 18 game frames and "a little below the middle"
+  was skipped over between two decisions. Scale 3 tick 5: scores 0 and 1. Scale 4 tick 5:
+  0 and 2. Scale 4 tick 3: 1 and 0. Scale 6 tick 5: 3 and 3, over a minute of flight each.
+- **Slow time, v1.4.0.** Scale 4 tick 5: scores 2 and 1, 27 to 29 s each. Scale 6 tick 5:
+  2 and 3, 55 to 68 s each. Shipped as scale 4, tick 5: a pipe every 8 s, still watchable.
+
+The conclusion: the description is good enough for Jev to fly. At normal game speed the
+physics outrun a 300 to 650 ms round trip, so the jev scene runs at 1/4 speed with a 5-frame
+tick. Lockstep remains the mode for judging the description alone.
 
 ## Known deviations
 
@@ -440,11 +458,12 @@ the prose template. Bump the patch number for wording that does not move a bound
 minor number when a threshold moves or a phrase changes meaning. Bump the major number when the
 state shape or the question set changes.
 
-Current version is 1.3.1. 1.1.0 carried the `next_opening` key rename, the prose change for
+Current version is 1.4.0. 1.1.0 carried the `next_opening` key rename, the prose change for
 being between the pipes, and the `maneuver` question that replaced the `flap` noul. 1.2.0
 made the two extreme `place_in_gap` phrases and all `next_opening` phrases bird-relative and
 reworded the maneuver criteria. 1.3.x added the hop physics sentence to RULES_TEXT and moved
-the `one_hop` / `let_it_fall` boundary to the middle of the opening. By the rule above a question set change is a major bump; these
+the `one_hop` / `let_it_fall` boundary to the middle of the opening. 1.4.0 sized the bands
+below the middle in hops and tied each maneuver to a band. By the rule above a question set change is a major bump; these
 stayed at minor because the scene was not wired into the game yet and no calibration of the
 new design had been published. The next question set change bumps the major number.
 
@@ -524,3 +543,79 @@ by side, or diffed.
 
 The panel dot and label show one of `waiting`, `live`, `paused`, `lockstep`, `hidden`,
 `backoff`, `dead`. Death still waits for a click, space or enter, as before.
+
+## Slow game time
+
+Debug mode made the timing visible; this is what the timing said. Real-time flights were not
+losing because Jev read the scene badly, they were losing because the world moved too far
+between the question and the answer. So the jev scene, and only the jev scene, runs its world
+slower.
+
+### Why
+
+- A measured TypeSafe round trip is **390-650 ms**. At 60 fps that is **23-40 draw frames**.
+- The bird free-falls from the centre of the canvas to the ground in **45 frames**.
+
+The answer therefore arrives after most of a fatal fall has already happened. In the headless
+simulator, where lockstep lets the world wait for every answer, the same vocabulary and the
+same questions score **7-8 pipes**. The description is fine; the clock is the problem.
+
+Slowing the physics closes the gap without touching the contract: a 400 ms answer that was 24
+draw frames old is now 8 frames of game time old, which is roughly what lockstep gives for
+free.
+
+### What changes
+
+`JEV_TIME_SCALE = 4` at the top of `data/scenes/jev-scene.js` is the whole knob (with
+`JEV_TICK_EVERY = 5`, chosen from the simulator runs in the flight log). Everything
+else derives from it, `JEV_DT = 1 / JEV_TIME_SCALE` being the fractional step.
+
+- **Physics.** `JevBird` and `JevPipe`, two small subclasses at the bottom of the scene file,
+  are the ordinary `Bird` and `Pipe` with their `update()` multiplied by `dt`. The scene builds
+  those instead of the base classes; every other scene keeps its full frame step. `jump()` is
+  untouched, a hop is still worth `BIRD_JUMP_POWER`.
+- **Cadence in game time.** The tick fires every `JEV_TICK_EVERY * JEV_TIME_SCALE` draw frames
+  and hops land `HOP_SPACING_FRAMES * JEV_TIME_SCALE` draw frames apart, so 5 and 8 still mean
+  5 and 8 *game* frames. `this.gameFrame` is the same clock in game time.
+- **Translator input.** `framesSinceFlap` keeps counting draw frames, but the translator is
+  handed `framesSinceFlap * JEV_DT`, so "flapped just now" still means what it meant before.
+- **Trace and panel.** The header carries `"timeScale"`, and `send`, `recv`, `hop` and `death`
+  carry a `gameFrame` next to the draw-frame `frame`. Timeline lines still print draw frames;
+  the panel's meta block gains a **speed** row reading `1/3 (jev world)`.
+
+### What does not change
+
+The drawing. 60 fps, the same canvas, the same pipes; the world just travels a third as far per
+frame, which reads as slow motion rather than as a slow game.
+
+The contract. Same state vocabulary, same questions, same maneuvers, same translator version.
+Nothing Jev sees knows about the time scale.
+
+The hop physics, near enough. A finer Euler step integrates slightly less: a hop rises about
+**46 px** instead of 48, because gravity is applied in thirds of a frame. The safe band is 47
+px, so "a single hop from the middle of an opening carries the bird all the way up into the top
+pipe" stays true and the rules sentence needs no edit. Measured in the browser: 46.0 px over 45
+draw frames (15 game frames) against 48.0 px over 15 frames for the plain `Bird`.
+
+The debug keys. `P`, `N`, `M`, `L` behave exactly as the Debug mode section describes; `N` still
+steps one *draw* frame, which is now a third of a game frame.
+
+### How to tune it
+
+Change the constant, nothing else. 1 is the old behaviour, 3 is what the flights above used. It
+is deliberately not a runtime key: a time scale that changes mid-flight makes a trace unreadable
+and the panel would have to explain it.
+
+The headless simulator mirrors it with `--time-scale=N`, which does the same three things (dt
+physics, tick and hop spacing in game time, translator input divided). A browser trace at
+`timeScale 3` and a `--time-scale=3` headless trace are comparable line by line.
+
+### Measured in the browser with a 400 ms stub
+
+- Pipes move **0.67 px** per draw frame, so two sends 27 frames apart show a pipe **18 px**
+  closer.
+- Requests go out every **27 draw frames** (about 450 ms), which is the 9-frame tick in game
+  time.
+- Hops inside one plan land **24 draw frames** apart; a fresh answer still resets the plan
+  immediately, as before.
+- Flights last **460-770 draw frames** instead of dying at 42, and the stub pilot passes pipes.

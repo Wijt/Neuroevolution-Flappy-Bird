@@ -10,7 +10,18 @@
 // first answer is in, P/N/M/L to pause, step and lockstep, and a trace log in the
 // same JSONL shape the offline harness writes, so a browser flight and a headless
 // one can be read side by side.
-const JEV_TICK_EVERY = 9;
+// Slow game time: the round trip is 390-650 ms, which is 23-40 draw frames, and the bird
+// free-falls from the centre to the ground in 45 of them. So the jev world moves in smaller
+// steps than the other scenes: same visuals, same 60 fps drawing, the physics just advance
+// by a fraction of a frame each draw. An answer that took 30 draw frames is then only 10
+// frames of game time old.
+const JEV_TIME_SCALE = 4; // the jev world runs this many times slower than the other scenes
+
+//one draw frame is worth this much game time
+const JEV_DT = 1 / JEV_TIME_SCALE;
+
+//the tick is in game frames, everything the scene counts is in draw frames
+const JEV_TICK_EVERY = 5;
 
 //the trace is a debugging aid, not a recording; the oldest lines fall off
 const JEV_TRACE_MAX = 2000;
@@ -27,6 +38,11 @@ const JEV_KEY_LOCKSTEP = 76;
 //the trace keeps the same two decimals the harness writes, nothing more
 function jevRound2(n) {
     return Math.round(n * 100) / 100;
+}
+
+//game frames are a third of a draw frame apart, one decimal says everything
+function jevRound1(n) {
+    return Math.round(n * 10) / 10;
 }
 
 class JevScene extends Scene {
@@ -46,6 +62,8 @@ class JevScene extends Scene {
         this.panel = null;
 
         this.frame = 0;
+        //the same clock in game time, so the cadence can be read in game frames
+        this.gameFrame = 0;
         this.runId = 0;
         this.framesSinceFlap = 999;
         this.lastTickFrame = 0;
@@ -111,7 +129,7 @@ class JevScene extends Scene {
 
         this.setupUI();
 
-        this.bird = new Bird(BIRD_X, height/2);
+        this.bird = new JevBird(BIRD_X, height/2);
 
         //the Pipe constructor pushes into the active scene's pipes, so this must exist first
         this.pipes = [];
@@ -119,15 +137,16 @@ class JevScene extends Scene {
         let pipeCount = width / (PIPE_BETWEEN + PIPE_WIDTH);
 
         for (let i = 1; i <= pipeCount + 2; i++) {
-            new Pipe(width - PIPE_WIDTH + i * (PIPE_BETWEEN + PIPE_WIDTH), random(PIPE_NO_GAP_ZONE, height-PIPE_NO_GAP_ZONE));
+            new JevPipe(width - PIPE_WIDTH + i * (PIPE_BETWEEN + PIPE_WIDTH), random(PIPE_NO_GAP_ZONE, height-PIPE_NO_GAP_ZONE));
         }
 
         this.nextPipe = null;
 
         this.frame = 0;
+        this.gameFrame = 0;
         this.runId++;
         this.framesSinceFlap = 999;
-        this.lastTickFrame = -JEV_TICK_EVERY;
+        this.lastTickFrame = -JEV_TICK_EVERY * JEV_TIME_SCALE;
 
         this.hopsRemaining = 0;
         this.nextHopFrame = 0;
@@ -149,6 +168,7 @@ class JevScene extends Scene {
             lockstep: this.lockstep,
             warmStart: true,
             tick: JEV_TICK_EVERY,
+            timeScale: JEV_TIME_SCALE,
             maxInFlight: this.lockstep ? 1 : this.client.maxInFlight,
             height: height,
             width: width,
@@ -199,16 +219,17 @@ class JevScene extends Scene {
         }
 
         this.frame++;
+        this.gameFrame = this.frame * JEV_DT;
 
         this.drainAnswers();
 
-        //spend the plan: a hop now, the rest one every HOP_SPACING_FRAMES frames
+        //spend the plan: a hop now, the rest one every HOP_SPACING_FRAMES game frames
         if (this.hopsRemaining > 0 && this.frame >= this.nextHopFrame) {
             this.doFlap();
             this.hopsRemaining--;
-            this.nextHopFrame = this.frame + JevQuestions.HOP_SPACING_FRAMES;
+            this.nextHopFrame = this.frame + JevQuestions.HOP_SPACING_FRAMES * JEV_TIME_SCALE;
 
-            this.writeTrace({ t: "hop", frame: this.frame, hopsLeft: this.hopsRemaining });
+            this.writeTrace({ t: "hop", frame: this.frame, gameFrame: jevRound1(this.gameFrame), hopsLeft: this.hopsRemaining });
             this.events++;
         }
 
@@ -286,6 +307,7 @@ class JevScene extends Scene {
         this.writeTrace({
             t: "death",
             frame: this.frame,
+            gameFrame: jevRound1(this.gameFrame),
             cause: cause,
             score: this.bird.score,
             birdY: jevRound2(this.bird.pos.y),
@@ -309,7 +331,8 @@ class JevScene extends Scene {
             birdY: this.bird.pos.y,
             birdVelocity: this.bird.velocity,
             birdRadius: JEV_COLLISION_R,
-            framesSinceFlap: this.framesSinceFlap,
+            //the translator's buckets are written in game frames, so hand it game frames
+            framesSinceFlap: this.framesSinceFlap * JEV_DT,
             nextPipe: {
                 x1: this.nextPipe.topPipe.x1,
                 x2: this.nextPipe.topPipe.x2,
@@ -361,6 +384,7 @@ class JevScene extends Scene {
         this.writeTrace({
             t: "recv",
             frame: this.frame,
+            gameFrame: jevRound1(this.gameFrame),
             reqId: message.reqId,
             sentFrame: tag.frame,
             latencyMs: message.latencyMs,
@@ -379,7 +403,7 @@ class JevScene extends Scene {
         if (this.sceneManager.getActiveScene() !== this) return;
         if (document.visibilityState !== "visible") return;
         if (this.lastDescription == null) return;
-        if (this.frame - this.lastTickFrame < JEV_TICK_EVERY) return;
+        if (this.frame - this.lastTickFrame < JEV_TICK_EVERY * JEV_TIME_SCALE) return;
         if (!this.client.canSend()) return;
         //lockstep means one request at a time, no matter what maxInFlight says
         if (this.lockstep && this.client.inFlight > 0) return;
@@ -402,6 +426,7 @@ class JevScene extends Scene {
         this.writeTrace({
             t: "send",
             frame: this.frame,
+            gameFrame: jevRound1(this.gameFrame),
             reqId: reqId,
             state: this.lastFields,
             birdY: jevRound2(this.bird.pos.y),
@@ -523,7 +548,8 @@ class JevScene extends Scene {
                 tokens: stats.inputTokens + " in, " + stats.outputTokens + " out",
                 latency: stats.lastLatencyMs + " ms",
                 discarded: stats.discarded,
-                errors: stats.errors + (stats.lastError != null ? " (" + stats.lastError + ")" : "")
+                errors: stats.errors + (stats.lastError != null ? " (" + stats.lastError + ")" : ""),
+                speed: "1/" + JEV_TIME_SCALE + " (jev world)"
             },
             trace: {
                 seq: this.traceSeq,
@@ -648,3 +674,42 @@ class JevScene extends Scene {
         this.gameStarted = false;
     }
 }
+
+//#region slow world
+// The same Bird and the same Pipe, stepped by a fraction of a frame. Only the jev
+// scene builds these, every other scene keeps its full frame step, so nothing else
+// in the game notices. jump() is untouched: a hop is still worth BIRD_JUMP_POWER.
+class JevBird extends Bird {
+    update() {
+        if (this.pos.y < height - GROUND_HEIGHT) {
+            this.pos.y += this.velocity * JEV_DT;
+            this.velocity += GRAVITY * JEV_DT;
+        } else {
+            this.pos.y = height - GROUND_HEIGHT;
+        }
+    }
+}
+
+class JevPipe extends Pipe {
+    update() {
+        this.pos.x -= this.velocity * JEV_DT;
+        if (this.pos.x < -this.width/2){
+            sceneManager.getActiveScene().pipes.splice(sceneManager.getActiveScene().pipes.indexOf(this), 1);
+            new JevPipe(sceneManager.getActiveScene().pipes[sceneManager.getActiveScene().pipes.length-1].pos.x + PIPE_BETWEEN + PIPE_WIDTH, random(150, height-150));
+        }
+
+        this.topPipe = {
+            x1: this.pos.x - this.width/2,
+            y1: 0,
+            x2: this.pos.x + this.width/2,
+            y2: this.pos.y - this.gapH/2
+        };
+        this.bottomPipe = {
+            x1: this.pos.x - this.width/2, 
+            y1: this.pos.y + this.gapH/2,
+            x2: this.pos.x + this.width/2,
+            y2: height
+        };
+    }
+}
+//#endregion
