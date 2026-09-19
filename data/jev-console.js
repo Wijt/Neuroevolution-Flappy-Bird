@@ -95,8 +95,12 @@
             this.startButton.addEventListener('click', () => this.callbacks.onStart && this.callbacks.onStart());
             this.menuButton = el('button', { text: 'Menu' });
             this.menuButton.addEventListener('click', () => this.callbacks.onMenu && this.callbacks.onMenu());
+            this.logButton = el('button', { text: 'Copy log' });
+            this.logButton.title = 'Copy every decision of this round as JSON (plan, Jev answers, sensor state, latency)';
+            this.logButton.addEventListener('click', () => this.copyLog());
             row.appendChild(this.startButton);
             row.appendChild(this.menuButton);
+            row.appendChild(this.logButton);
             s.appendChild(row);
 
             const row2 = el('div', { className: 'jev-console-row' });
@@ -575,6 +579,23 @@
             row.appendChild(el('span', { className: 'jev-console-sitrep-key', text: key + ':' }));
             row.appendChild(el('span', { className: 'jev-console-sitrep-val', text: String(value) }));
             return row;
+        }
+
+        // Full decision records (set by the scene) for the Copy log button.
+        setLog(records) { this.logRecords = records || []; }
+
+        copyLog() {
+            const text = JSON.stringify(this.logRecords || [], null, 1);
+            const done = () => { this.logButton.textContent = 'Copied'; setTimeout(() => { this.logButton.textContent = 'Copy log'; }, 1500); };
+            if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, () => this._fallbackCopy(text, done));
+            else this._fallbackCopy(text, done);
+        }
+
+        _fallbackCopy(text, done) {
+            const ta = document.createElement('textarea');
+            ta.value = text; document.body.appendChild(ta); ta.select();
+            try { document.execCommand('copy'); } catch (e) { /* ignore */ }
+            ta.remove(); done();
         }
 
         setHistory(entries) {

@@ -33,7 +33,7 @@ test('buildRequest produces the pure sensor shape with no outcome words', () => 
     const state = request.state;
     assert.deepEqual(Object.keys(state).sort(), ['game', 'hole', 'next_hole', 'pipe', 'rays', 'you'].sort());
     assert.match(state.you, /^falling/);
-    assert.match(state.hole, /^BELOW you by \d+ px$/);
+    assert.match(state.hole, /^BELOW you by \d+ px \(top edge .*\)$/);
     assert.match(state.next_hole, /^\d+ px lower than this one$/);
     assert.deepEqual(Object.keys(state.rays), ['straight ahead', 'ahead and up', 'ahead and down']);
     assert.equal(state.rays['ahead and down'], 'the bottom pipe');
@@ -48,7 +48,7 @@ test('buildRequest produces the pure sensor shape with no outcome words', () => 
     for (const word of ['Safe', 'CRASH', 'too low', 'too high', 'level with']) {
         assert.equal(stateText.includes(word), false, `state must not contain "${word}"`);
     }
-    assert.ok(JSON.stringify(request).length < 2100, `request too long: ${JSON.stringify(request).length} chars`);
+    assert.ok(JSON.stringify(request).length < 2300, `request too long: ${JSON.stringify(request).length} chars`);
 });
 
 test('hole straight ahead and pipe distance buckets', () => {
@@ -57,7 +57,7 @@ test('hole straight ahead and pipe distance buckets', () => {
     state.bird.velocity = 0;
     const st = JevContract.buildRequest(state).state;
     assert.match(st.you, /^level/);
-    assert.equal(st.hole, 'straight ahead at your height');
+    assert.match(st.hole, /^straight ahead at your height (top edge/);
 
     state.pipes = [{ left: 1000, right: 1050, gapTop: 260, gapBottom: 385 }];
     const far = JevContract.buildRequest(state).state;
@@ -87,8 +87,9 @@ test('composePlan uses the expected number of flaps and a danger floor', () => {
     assert.equal(JevContract.composePlan(answers(dist(0.55, 0.34, 0.08, 0.02), 'now', 0.3)), 'flap_now');
     // 95/2/2/1 -> 0.09 -> none, low danger keeps it none
     assert.equal(JevContract.composePlan(answers(dist(0.95, 0.02, 0.02, 0.01), 'now', 0.4)), 'no_flap');
-    // ... but danger >= 0.6 turns a marginal none into one flap
-    assert.equal(JevContract.composePlan(answers(dist(0.95, 0.02, 0.02, 0.01), 'soon', 0.75)), 'flap_at_8');
+    // ... a noisy danger (0.75) does not; only a clear alarm (>= 0.8) turns none into one flap
+    assert.equal(JevContract.composePlan(answers(dist(0.95, 0.02, 0.02, 0.01), 'soon', 0.75)), 'no_flap');
+    assert.equal(JevContract.composePlan(answers(dist(0.95, 0.02, 0.02, 0.01), 'soon', 0.85)), 'flap_at_8');
     // 4/35/48/13 -> 1.7 -> two flaps
     assert.equal(JevContract.composePlan(answers(dist(0.04, 0.35, 0.48, 0.13), 'now', 0.7)), 'double_flap');
     // 11/13/38/38 -> 2.03 -> two flaps; 2/7/20/71 -> 2.6 -> three
@@ -219,4 +220,10 @@ test('parseResponse rejects a missing answer', () => {
     const missingTiming = validAnswer();
     delete missingTiming.answers.timing;
     assert.throws(() => JevContract.parseResponse(missingTiming), /Invalid Jev response/);
+});
+
+test('hole sensor names both edges', () => {
+    const state = makeState(); // bird y 300.44, gap 260..385
+    const st = JevContract.buildRequest(state).state;
+    assert.match(st.hole, /^BELOW you by 22 px \(top edge 40 px above you, bottom edge 85 px below you\)$/);
 });

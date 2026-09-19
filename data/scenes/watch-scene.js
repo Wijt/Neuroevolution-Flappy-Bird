@@ -405,7 +405,9 @@ class WatchScene extends Scene {
         const probabilities = answers && answers.climb ? answers.climb.probabilities : null;
         const confidence = answers && answers.climb ? answers.climb.confidence : null;
 
-        const decision = { index: k, plan, answers, probabilities, confidence, latencyMs, late, physicsBest, agree };
+        let sensors = null;
+        try { sensors = JevContract.buildRequest(state).state; } catch (e) { /* log only */ }
+        const decision = { index: k, plan, answers, probabilities, confidence, latencyMs, late, physicsBest, agree, sensors };
         this.history.push(decision);
         if (this.history.length > 50) this.history.shift();
 
@@ -458,6 +460,7 @@ class WatchScene extends Scene {
             cost: this.tokensIn * 0.042 / 1e6,
             reqPerSec: elapsedS > 0 ? this.requestsSent / elapsedS : 0
         });
+        if (this.panel.setLog) this.panel.setLog(this.history);
         this.panel.setHistory(this.history.map(h => ({
             index: h.index,
             plan: h.plan,

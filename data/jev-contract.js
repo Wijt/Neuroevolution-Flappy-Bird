@@ -16,7 +16,8 @@
             type: 'choice',
             instructions:
                 'How many flaps do you need in the next 0.4 seconds? Look at where the hole is and whether you are rising or falling. ' +
-                'You always fall unless you flap, and one flap only lifts you a little. Being too low is worse than being too high.',
+                'You always fall unless you flap, and one flap only lifts you a little. Too many flaps overshoot into the top pipe; ' +
+                'too few drop you into the bottom pipe. If you are rising, you usually need nothing.',
             criteria: {
                 none: 'The hole is below you, or you are rising and already above the hole. No flap needed.',
                 one_flap: 'The hole is roughly at your height, or a little above you (less than about 40 px), and you are falling.',
@@ -39,6 +40,7 @@
     const TIMING_TO_PLAN = { now: 'flap_now', soon: 'flap_at_8', late: 'flap_at_16' };
 
     const FLAPS_OF = { none: 0, one_flap: 1, two_flaps: 2, three_flaps: 3 };
+    const DANGER_FLOOR = 0.8;
     const PLAN_OF_FLAPS = { 0: 'no_flap', 2: 'double_flap', 3: 'triple_flap' };
 
     // Expected number of flaps under Jev's whole distribution (probability-weighted), not
@@ -55,13 +57,14 @@
 
     // Code composes the plan from Jev's judgments. Policy, explicit and in one place:
     //  - flaps = expected flaps rounded to the nearest whole number;
-    //  - if Jev also says danger is more likely than not (>= 0.6) and the rounding gave
-    //    zero flaps, flap once anyway: its own danger judgment outranks a marginal "none".
+    //  - if Jev is clearly sure about danger (>= 0.8) and the rounding gave zero flaps, flap
+    //    once anyway. Live data showed danger sits at 0.45-0.79 for any falling bird, so a
+    //    0.6 floor over-flapped into the top pipe; 0.8 only fires on a real alarm.
     // Nothing here looks at physics; only Jev's answers.
     function composePlan(answers) {
         let flaps = Math.round(expectedFlaps(answers.climb));
         const danger = answers.danger && Number.isFinite(answers.danger.noul) ? answers.danger.noul : 0;
-        if (flaps === 0 && danger >= 0.6) flaps = 1;
+        if (flaps === 0 && danger >= DANGER_FLOOR) flaps = 1;
         flaps = Math.max(0, Math.min(3, flaps));
         if (flaps === 1) return TIMING_TO_PLAN[answers.timing && answers.timing.choice] || 'flap_now';
         return PLAN_OF_FLAPS[flaps];
@@ -98,9 +101,15 @@
         return speed > 4 ? `${dir} fast` : speed > 1.5 ? dir : `${dir} slowly`;
     }
 
-    function describeHole(diff) {
-        if (Math.abs(diff) < 10) return 'straight ahead at your height';
-        return `${diff > 0 ? 'ABOVE' : 'BELOW'} you by ${px(diff)}`;
+    // Where the hole's middle is, plus both edges, so the model can see when the top
+    // pipe is close as well as the bottom one (a player sees both edges).
+    function describeHole(diff, pipe, birdY) {
+        const topEdge = birdY - pipe.gapTop;       // positive: top edge is above you
+        const bottomEdge = pipe.gapBottom - birdY; // positive: bottom edge is below you
+        const edge = (d, up) => d >= 0 ? `${px(d)} ${up ? 'above' : 'below'} you` : `${px(d)} ${up ? 'below' : 'above'} you`;
+        const edges = ` (top edge ${edge(topEdge, true)}, bottom edge ${edge(bottomEdge, false)})`;
+        if (Math.abs(diff) < 10) return 'straight ahead at your height' + edges;
+        return `${diff > 0 ? 'ABOVE' : 'BELOW'} you by ${px(diff)}` + edges;
     }
 
     function describePipe(state) {
@@ -131,7 +140,7 @@
         const sensorState = {
             game: 'You are the bird in Flappy Bird. Fly through the hole between the top pipe and the bottom pipe. Touching a pipe or the ground kills you. You fall all the time; a flap gives one push upward.',
             you: motionWord(bird.velocity),
-            hole: describeHole(diff),
+            hole: describeHole(diff, pipe, bird.y),
             pipe: describePipe(state),
             rays: {
                 'straight ahead': castRay(state, 0),
