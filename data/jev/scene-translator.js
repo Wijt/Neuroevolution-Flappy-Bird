@@ -2,7 +2,7 @@
 // Turns raw numbers from the game loop into a small, fixed vocabulary.
 // No p5 globals, no DOM, no width/height. Safe to require() from Node.
 var JevTranslator = (function () {
-    var VERSION = "1.0.0";
+    var VERSION = "1.2.0";
 
     var RULES_TEXT = "The bird flies right at constant speed and cannot slow down or turn. Gravity pulls it down constantly. A flap gives one short upward hop, after which it falls again; flapping repeatedly stacks hops upward. Pipes arrive from the right; each has a top and bottom pipe with an opening between them. Touching a pipe, the ground or the ceiling ends the flight.";
 
@@ -19,10 +19,10 @@ var JevTranslator = (function () {
     // offset = birdY - gapCenter, positive means the bird is below the gap centre.
     function placeInGap(offset) {
         if (Math.abs(offset) <= 15) return "in the middle of the gap";
-        if (offset < -50) return "level with the top pipe";
+        if (offset < -50) return "far above the opening, in front of the top pipe";
         if (offset <= -35) return "close to the top pipe edge";
         if (offset < 0) return "a little above the middle";
-        if (offset > 50) return "level with the bottom pipe";
+        if (offset > 50) return "far below the opening, in front of the bottom pipe";
         if (offset >= 35) return "close to the bottom pipe edge";
         return "a little below the middle";
     }
@@ -58,11 +58,11 @@ var JevTranslator = (function () {
     // delta = followingGapCenter - currentGapCenter; screen y grows downward, so a
     // negative delta means the next gap sits higher on the screen.
     function followingGap(delta) {
-        if (Math.abs(delta) <= 20) return "about the same height";
-        if (delta < -60) return "much higher";
-        if (delta < 0) return "a little higher";
-        if (delta > 60) return "much lower";
-        return "a little lower";
+        if (Math.abs(delta) <= 20) return "at about the same height as the bird";
+        if (delta < -60) return "far above the bird";
+        if (delta < 0) return "slightly above the bird";
+        if (delta > 60) return "far below the bird";
+        return "slightly below the bird";
     }
 
     function describeScene(input) {
@@ -105,7 +105,7 @@ var JevTranslator = (function () {
             }
         };
         if (fields.following_gap !== null) {
-            state.following_gap = fields.following_gap;
+            state.next_opening = fields.following_gap;
         }
 
         var prose = RULES_TEXT +
@@ -117,7 +117,7 @@ var JevTranslator = (function () {
                 ? ". The bird is between the pipes right now."
                 : ". The next pipe is " + fields.distance + ".");
         if (fields.following_gap !== null) {
-            prose += " The gap after this one is " + fields.following_gap + ".";
+            prose += " The next opening after this one is " + fields.following_gap + ".";
         }
 
         return { state: state, prose: prose, fields: fields };

@@ -1,6 +1,13 @@
 // The side panel that shows what Jev is thinking.
 // Plain DOM on purpose: p5 0.10.2's createDiv() is clumsy for something this nested,
 // and the panel must never touch the canvas.
+const JEV_MANEUVER_OPTIONS = [
+    "let_it_fall",
+    "one_hop",
+    "two_hops",
+    "climb_hard"
+];
+
 const JEV_READ_OPTIONS = [
     "too_high",
     "aligned",
@@ -42,6 +49,7 @@ class JevPanel {
         this.cache = {};
 
         this.fieldNodes = {};
+        this.maneuverNodes = {};
         this.readNodes = {};
         this.metaNodes = {};
 
@@ -96,59 +104,23 @@ class JevPanel {
         this.root.appendChild(this.wrap(list));
         //#endregion
 
-        //#region flap
-        this.root.appendChild(this.makeTitle("flap"));
+        //#region maneuver
+        this.root.appendChild(this.makeTitle("maneuver"));
 
-        let bar = document.createElement("div");
-        bar.className = "jev-bar";
-        this.flapFill = document.createElement("div");
-        this.flapFill.className = "jev-bar-fill";
-        bar.appendChild(this.flapFill);
-        let tick = document.createElement("div");
-        tick.className = "jev-tick";
-        bar.appendChild(tick);
+        let maneuverBox = document.createElement("div");
+        maneuverBox.appendChild(this.makeOptionList(JEV_MANEUVER_OPTIONS, this.maneuverNodes));
 
-        this.flapLabel = document.createElement("div");
-        this.flapLabel.className = "jev-val";
-        this.flapLabel.textContent = "-";
+        this.planLabel = document.createElement("div");
+        this.planLabel.className = "jev-val";
+        this.planLabel.textContent = "plan: none";
+        maneuverBox.appendChild(this.planLabel);
 
-        let flapBox = document.createElement("div");
-        flapBox.appendChild(bar);
-        flapBox.appendChild(this.flapLabel);
-        this.root.appendChild(this.wrap(flapBox));
+        this.root.appendChild(this.wrap(maneuverBox));
         //#endregion
 
         //#region read
         this.root.appendChild(this.makeTitle("read"));
-
-        let readList = document.createElement("div");
-        readList.className = "jev-read";
-        JEV_READ_OPTIONS.forEach(option => {
-            let row = document.createElement("div");
-            row.className = "jev-read-row";
-
-            let name = document.createElement("span");
-            name.className = "jev-read-name";
-            name.textContent = option.split("_").join(" ");
-
-            let mini = document.createElement("span");
-            mini.className = "jev-mini";
-            let miniFill = document.createElement("span");
-            miniFill.className = "jev-mini-fill";
-            mini.appendChild(miniFill);
-
-            let prob = document.createElement("span");
-            prob.className = "jev-read-p";
-            prob.textContent = "-";
-
-            row.appendChild(name);
-            row.appendChild(mini);
-            row.appendChild(prob);
-            readList.appendChild(row);
-
-            this.readNodes[option] = { row: row, fill: miniFill, prob: prob };
-        });
-        this.root.appendChild(this.wrap(readList));
+        this.root.appendChild(this.wrap(this.makeOptionList(JEV_READ_OPTIONS, this.readNodes)));
         //#endregion
 
         //#region danger
@@ -176,6 +148,41 @@ class JevPanel {
         //#endregion
 
         document.body.appendChild(this.root);
+    }
+
+    // one fixed-order list of options with a mini bar and a probability each,
+    // used by both the maneuver and the read section
+    makeOptionList(options, nodes) {
+        let list = document.createElement("div");
+        list.className = "jev-read";
+
+        options.forEach(option => {
+            let row = document.createElement("div");
+            row.className = "jev-read-row";
+
+            let name = document.createElement("span");
+            name.className = "jev-read-name";
+            name.textContent = option.split("_").join(" ");
+
+            let mini = document.createElement("span");
+            mini.className = "jev-mini";
+            let miniFill = document.createElement("span");
+            miniFill.className = "jev-mini-fill";
+            mini.appendChild(miniFill);
+
+            let prob = document.createElement("span");
+            prob.className = "jev-read-p";
+            prob.textContent = "-";
+
+            row.appendChild(name);
+            row.appendChild(mini);
+            row.appendChild(prob);
+            list.appendChild(row);
+
+            nodes[option] = { row: row, fill: miniFill, prob: prob };
+        });
+
+        return list;
     }
 
     makeTitle(text) {
@@ -228,6 +235,32 @@ class JevPanel {
         else node.classList.remove("is-choice");
     }
 
+    // answer is a choice answer: { choice, probabilities }
+    updateOptionList(prefix, options, nodes, answer) {
+        let probabilities = (answer != null && answer.probabilities != null) ? answer.probabilities : null;
+
+        options.forEach(option => {
+            let node = nodes[option];
+            let p = (probabilities != null && typeof probabilities[option] === "number") ? probabilities[option] : null;
+            if (p == null) {
+                this.setWidth(prefix + ":" + option + ":w", node.fill, "0%");
+                this.setText(prefix + ":" + option + ":p", node.prob, "-");
+            } else {
+                this.setWidth(prefix + ":" + option + ":w", node.fill, Math.round(p * 100) + "%");
+                this.setText(prefix + ":" + option + ":p", node.prob, p.toFixed(2));
+            }
+            this.setChoice(prefix + ":" + option + ":c", node.row, answer != null && answer.choice === option);
+        });
+    }
+
+    planText(plan) {
+        if (plan == null || !(plan.hopsRemaining > 0)) return "plan: none";
+
+        let hops = plan.hopsRemaining + (plan.hopsRemaining === 1 ? " hop left" : " hops left");
+        let frames = plan.nextHopIn + (plan.nextHopIn === 1 ? " frame" : " frames");
+        return "plan: " + hops + ", next in " + frames;
+    }
+
     update(view) {
         if (this.destroyed || view == null) return;
 
@@ -244,33 +277,13 @@ class JevPanel {
         });
         //#endregion
 
-        //#region flap
-        let noul = (view.flap != null && typeof view.flap.noul === "number") ? view.flap.noul : null;
-        if (noul == null) {
-            this.setWidth("flapW", this.flapFill, "0%");
-            this.setText("flapL", this.flapLabel, "-");
-        } else {
-            this.setWidth("flapW", this.flapFill, Math.round(noul * 100) + "%");
-            let verdict = noul >= JevQuestions.FLAP_THRESHOLD ? "FLAP" : "hold";
-            this.setText("flapL", this.flapLabel, noul.toFixed(2) + "  " + verdict);
-        }
+        //#region maneuver
+        this.updateOptionList("mv", JEV_MANEUVER_OPTIONS, this.maneuverNodes, view.maneuver);
+        this.setText("plan", this.planLabel, this.planText(view.plan));
         //#endregion
 
         //#region read
-        let read = view.read;
-        let probabilities = (read != null && read.probabilities != null) ? read.probabilities : null;
-        JEV_READ_OPTIONS.forEach(option => {
-            let nodes = this.readNodes[option];
-            let p = (probabilities != null && typeof probabilities[option] === "number") ? probabilities[option] : null;
-            if (p == null) {
-                this.setWidth("r:" + option + ":w", nodes.fill, "0%");
-                this.setText("r:" + option + ":p", nodes.prob, "-");
-            } else {
-                this.setWidth("r:" + option + ":w", nodes.fill, Math.round(p * 100) + "%");
-                this.setText("r:" + option + ":p", nodes.prob, p.toFixed(2));
-            }
-            this.setChoice("r:" + option + ":c", nodes.row, read != null && read.choice === option);
-        });
+        this.updateOptionList("r", JEV_READ_OPTIONS, this.readNodes, view.read);
         //#endregion
 
         //#region danger

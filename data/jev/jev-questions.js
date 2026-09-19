@@ -1,17 +1,22 @@
 // Question definitions for the Jev pilot.
 // build() returns a fresh deep copy every call so nothing can mutate shared state.
+// The game acts on `maneuver` only; `read` and `danger` feed the side panel.
 var JevQuestions = (function () {
-    var FLAP_THRESHOLD = 0.5;
-    var IDS = ["flap", "read", "danger"];
+    // how many flaps each maneuver turns into, and how far apart the flaps land
+    var HOPS = { let_it_fall: 0, one_hop: 1, two_hops: 2, climb_hard: 3 };
+    var HOP_SPACING_FRAMES = 8;
+    var IDS = ["maneuver", "read", "danger"];
 
     function build() {
         return {
-            flap: {
-                type: "noul",
-                instructions: "Given the described situation, should the bird flap right now?",
+            maneuver: {
+                type: "choice",
+                instructions: "For the next short stretch of flight, which maneuver should the bird make? Flapping is the only way up; not flapping is the only way down.",
                 criteria: {
-                    true: "flapping now leads to a safer position in the gap",
-                    false: "waiting is safer, or flapping risks the top pipe or the ceiling"
+                    let_it_fall: "descend: make no flap and let gravity bring the bird down; the choice when the bird is above the opening, already rising, or close to the ceiling",
+                    one_hop: "hold height: one flap that roughly cancels the current fall; the choice when the bird is about level with the opening and falling",
+                    two_hops: "climb a little: two flaps in quick succession; the choice when the bird is somewhat below the opening",
+                    climb_hard: "climb a lot: three flaps in quick succession; the choice when the bird is far below the opening or close to the ground"
                 }
             },
             read: {
@@ -40,7 +45,8 @@ var JevQuestions = (function () {
     }
 
     return {
-        FLAP_THRESHOLD: FLAP_THRESHOLD,
+        HOPS: HOPS,
+        HOP_SPACING_FRAMES: HOP_SPACING_FRAMES,
         IDS: IDS,
         build: build
     };

@@ -7,7 +7,7 @@ the version.
 
 The `jev` scene puts TypeSafe's Jev model in the pilot chair of Flappy Bird. The game loop does
 not steer the bird. Every few frames the code describes the visible scene in words, sends that
-description to Jev, and flaps when Jev says to flap.
+description to Jev, and executes the maneuver Jev picks.
 
 The other scenes (play, train, watch) are untouched. This is an experiment, not a replacement
 for the neuroevolution brain.
@@ -23,11 +23,31 @@ phrases and nothing else. The model always sees the same words for the same kind
 The vocabulary is the tuning lever. If the bird flies badly we change phrases or thresholds. We
 never add a code override of Jev's decision.
 
+## Why the question is a maneuver and not a single flap
+
+The first design asked a yes/no question once per request: should the bird flap right now? That
+cannot work at the real speed of the loop.
+
+- Measured latency on the first live run was 367 ms in the harness and about 280 ms in the
+  browser. That is roughly 17 frames, not the 100 to 150 ms the earlier draft assumed.
+- One flap gains about 45 px and the bird is back at the same height about 30 frames later.
+  Gaining real height needs 3 to 4 flaps spaced about 8 frames apart.
+- With one yes/no answer per round trip, and with answers discarded after every flap, the bird
+  could produce at most one flap per latency window. It could hold altitude and never climb.
+
+Live this showed up exactly as the arithmetic predicts. The bird sat level with the bottom pipe,
+`flap` hovered around 0.57, one hop went out, the bird fell back to the same place, and it died
+there over and over.
+
+So the unit of decision is now a short plan, not a single frame. Jev picks how much to climb;
+code turns that number into that many jumps. This is bounded action selection: the set of
+actions is fixed and tiny, Jev chooses among them alone, and code only spaces the flaps out.
+
 ## State contract
 
 File: `data/jev/scene-translator.js`. Global `JevTranslator`, also `module.exports`.
 
-`JevTranslator.VERSION = "1.0.0"`.
+`JevTranslator.VERSION = "1.2.0"`.
 
 ### Input
 
@@ -59,17 +79,17 @@ The translator touches no p5 globals, no DOM, and no `width` / `height`. It is a
     "surroundings": "..."
   },
   "pipe_ahead": { "distance": "..." },
-  "following_gap": "..."
+  "next_opening": "..."
 }
 ```
 
-The `following_gap` key is omitted entirely unless the bird is between the pipes AND
+The `next_opening` key is omitted entirely unless the bird is between the pipes AND
 `followingPipe` is not null. An absent key is not the same as an empty string. Do not send
 `null`.
 
 `prose` is format B, the same content as one paragraph. `fields` is a flat map of the six
-phrases for the side panel. In `fields` the `following_gap` entry is `null` when it does not
-apply.
+phrases for the side panel. In `fields` the entry is still called `following_gap` and is `null`
+when it does not apply. The state key is `next_opening`.
 
 ### RULES_TEXT
 
@@ -89,19 +109,29 @@ Every bucket set is exhaustive. No input falls through.
 | Field | Phrases in order | Thresholds |
 |---|---|---|
 | `vertical_motion` (v px/frame, negative is up) | shooting upward from a flap / still rising / hanging at the top of its hop / starting to fall / falling / dropping fast | v <= -4 / -4 < v <= -1 / -1 < v < 1 / 1 <= v < 3 / 3 <= v < 6 / v >= 6 |
-| `place_in_gap` (off = birdY - gapCenter, positive is below) | level with the top pipe / close to the top pipe edge / a little above the middle / in the middle of the gap / a little below the middle / close to the bottom pipe edge / level with the bottom pipe | off < -50 / -50 to -35 / -35 to -15 / abs(off) <= 15 / 15 to 35 / 35 to 50 / off > 50 |
+| `place_in_gap` (off = birdY - gapCenter, positive is below) | far above the opening, in front of the top pipe / close to the top pipe edge / a little above the middle / in the middle of the gap / a little below the middle / close to the bottom pipe edge / far below the opening, in front of the bottom pipe | off < -50 / -50 to -35 / -35 to -15 / abs(off) <= 15 / 15 to 35 / 35 to 50 / off > 50 |
 | `last_flap` (frames since last flap) | flapped just now / flapped a moment ago / has not flapped recently | < 6 / 6 to 20 / > 20 |
 | `surroundings` | the ground is close below / the ceiling is close above / open sky above and below | groundY - (birdY + r) < 60, checked first / birdY - r < 60 / otherwise |
 | `pipe_ahead.distance` (d = x1 - (birdX + r)) | between the pipes right now / right in front of the bird / close ahead / some distance ahead / far ahead | x1 <= birdX <= x2 / d < 40 / 40 to 100 / 100 to 200 / d >= 200 |
-| `following_gap` (delta = followingCenter - currentCenter) | much higher / a little higher / about the same height / a little lower / much lower | delta < -60 / -60 to -20 / abs(delta) <= 20 / 20 to 60 / delta > 60 |
+| `next_opening` (delta = followingCenter - currentCenter) | far above the bird / slightly above the bird / at about the same height as the bird / slightly below the bird / far below the bird | delta < -60 / -60 to -20 / abs(delta) <= 20 / 20 to 60 / delta > 60 |
 
 Screen y grows downward. A negative `delta` means the next gap sits higher on the screen. The
 sign inversion is commented in the code.
 
+The `next_opening` phrases used to be bare comparatives: much higher, a little higher, about the
+same height, a little lower, much lower. The first calibration put Jev at 0.39 to 0.56 on the
+following-gap cases, which means it was not reading "much higher" and "much lower" as being
+about the screen at all. The phrases are now explicitly spatial, and the state key says `next_opening` instead of
+`following_gap`. The v1.1.0 wording compared the next opening with the current opening ("well
+below this opening"). Jev still read that as being about the bird, so v1.2.0 compares with the
+bird directly ("far below the bird"). The same run showed "level with the bottom pipe" being
+read as aligned rather than blocked, so the two extreme `place_in_gap` phrases now say "far
+below the opening, in front of the bottom pipe" and the mirror for the top.
+
 The middle band wins on ties. `abs(off) <= 15` is checked before the neighbouring bands, and
 `abs(delta) <= 20` likewise. On the outer edges the wider band wins: off = -50 is "close to the
-top pipe edge", off = 50 is "close to the bottom pipe edge", delta = -60 is "a little higher",
-delta = 60 is "a little lower".
+top pipe edge", off = 50 is "close to the bottom pipe edge", delta = -60 is "slightly above the
+bird", delta = 60 is "slightly below the bird".
 
 The bucket helpers are exported individually for the calibration harness:
 `verticalMotion(v)`, `placeInGap(offset)`, `lastFlap(frames)`,
@@ -112,8 +142,12 @@ The bucket helpers are exported individually for the calibration harness:
 
 ```
 <RULES_TEXT> Right now the bird is {vertical_motion}, it is {place_in_gap}, it {last_flap},
-and {surroundings}. The next pipe is {distance}.[ The gap after this one is {following_gap}.]
+and {surroundings}. {The bird is between the pipes right now. | The next pipe is {distance}.}
+[ The next opening after this one is {next_opening}.]
 ```
+
+The prose already begins with RULES_TEXT. Format B therefore sends `{ situation: prose }` and
+nothing else. Sending a separate `rules` field next to it would state the rules twice.
 
 ### Example state
 
@@ -131,24 +165,28 @@ groundY: 750, canvasHeight: 800 }` gives:
     "surroundings": "open sky above and below"
   },
   "pipe_ahead": { "distance": "between the pipes right now" },
-  "following_gap": "much higher"
+  "next_opening": "far above the bird"
 }
 ```
 
 ## Questions
 
 File: `data/jev/jev-questions.js`. Global `JevQuestions`, also `module.exports`.
-`JevQuestions.FLAP_THRESHOLD = 0.5`. `JevQuestions.IDS = ["flap", "read", "danger"]`.
+`JevQuestions.IDS = ["maneuver", "read", "danger"]`.
+`JevQuestions.HOPS = { let_it_fall: 0, one_hop: 1, two_hops: 2, climb_hard: 3 }`.
+`JevQuestions.HOP_SPACING_FRAMES = 8`.
 `JevQuestions.build()` returns a fresh deep copy on every call.
 
 ```js
 {
-    flap: {
-        type: "noul",
-        instructions: "Given the described situation, should the bird flap right now?",
+    maneuver: {
+        type: "choice",
+        instructions: "For the next short stretch of flight, which maneuver should the bird make? Flapping is the only way up; not flapping is the only way down.",
         criteria: {
-            true: "flapping now leads to a safer position in the gap",
-            false: "waiting is safer, or flapping risks the top pipe or the ceiling"
+            let_it_fall: "descend: make no flap and let gravity bring the bird down; the choice when the bird is above the opening, already rising, or close to the ceiling",
+            one_hop: "hold height: one flap that roughly cancels the current fall; the choice when the bird is about level with the opening and falling",
+            two_hops: "climb a little: two flaps in quick succession; the choice when the bird is somewhat below the opening",
+            climb_hard: "climb a lot: three flaps in quick succession; the choice when the bird is far below the opening or close to the ground"
         }
     },
     read: {
@@ -176,19 +214,27 @@ File: `data/jev/jev-questions.js`. Global `JevQuestions`, also `module.exports`.
 }
 ```
 
-Fields read from the response: `answers.flap.noul`,
+Fields read from the response: `answers.maneuver.{choice, probabilities, confidence}`,
 `answers.read.{choice, probabilities, confidence}`, `answers.danger.{score, legend}`,
 `usage.{input_tokens, output_tokens}`.
 
 ## Decision rule
 
-The bird flaps when `answers.flap.noul >= JevQuestions.FLAP_THRESHOLD` (0.5).
+An answer sets the flight plan to `JevQuestions.HOPS[answers.maneuver.choice]` flaps. The code
+executes those flaps `JevQuestions.HOP_SPACING_FRAMES` frames apart, that is 8 frames, and then
+the plan is empty and the bird falls until the next answer arrives.
+
+A newer answer replaces whatever is left of the older plan. There is no queueing and no adding
+up. The latest thing Jev said is the only plan.
 
 There is no code override. The game does not flap on its own when it thinks Jev is wrong. It
 does not block a flap it thinks is unsafe. It does not add a safety net near the ground or the
 ceiling. `read` and `danger` are shown in the panel and never touch the controls. If the bird
 flies badly, the fix is the vocabulary, the thresholds, or the question criteria. Never a rule
 in the game loop.
+
+Turning "three flaps" into three jumps 8 frames apart is not an override. Jev chose the three.
+Code only owns the spacing, which is a physical constant of the game, not a judgement.
 
 `doFlap()` is the only caller of `bird.jump()`.
 
@@ -197,13 +243,14 @@ in the game loop.
 Answers arrive later than the state they describe. Up to two requests are in flight at once, so
 an answer can be stale.
 
-Every request carries a tag `{ runId, flapSeq, frame }`. `runId` changes on every restart.
-`flapSeq` increments on every flap. On arrival an answer is discarded when `tag.runId` does not
-match the current run, or when `tag.flapSeq` does not match the current flap sequence. A
-discarded answer bumps `stats.discarded` and nothing else.
+Every request carries a tag `{ runId, frame }`. `runId` changes on every restart. On arrival an
+answer is discarded only when `tag.runId` does not match the current run. A discarded answer
+bumps `stats.discarded` and nothing else.
 
-The reason: once the bird has flapped, the described situation no longer exists. Acting on an
-answer about the pre-flap state stacks unwanted hops.
+Answers are no longer discarded because the bird flapped in the meantime. That rule existed for
+the old per-frame flap question and it was what made climbing impossible: every flap threw away
+the answers that would have produced the next flap. With a maneuver plan, a flap in flight is
+expected, and a newer answer simply replaces the rest of the plan.
 
 ## Request loop
 
@@ -221,6 +268,15 @@ Budget: about 400 requests per minute at full speed, against a 1200 per minute l
 request is roughly 300 input tokens. At $0.042 per million input tokens that is roughly $0.30
 per hour of continuous play. The gates matter. A hidden tab, a menu, or a dead bird must cost
 nothing.
+
+## Death and restart
+
+Death does not restart the flight by itself. The scene stays on the death screen until the user
+clicks to fly again. Nothing is sent while dead, so a bird that dies while nobody is watching
+costs nothing at all. An auto-restart would spend credits on a loop no one is looking at.
+
+`runId` changes on the click that starts the new flight, so answers from the dead flight are
+discarded.
 
 ## Transport and key handling
 
@@ -253,23 +309,74 @@ npm run calibrate
 
 It requires the two shared files directly, which also proves the dual export works. It runs 25
 hand-written scenes through both formats. Format A sends the `state` object. Format B sends
-`{ rules, situation: prose }`.
+`{ situation: prose }` and nothing else, because the prose already opens with RULES_TEXT.
 
-Reading the table: each row is one case with the flap probability, the resulting action, and
-PASS or FAIL for each format. The summary gives the pass count per format, the mean margin
-`abs(p - 0.5)`, the failure list, token totals, mean and p95 latency, and the recommended
-format. Failures print the exact state plus the `read` and `danger` answers, so you can see what
-the model understood.
+Each case carries `expect`, an array of maneuvers a human pilot would accept. Several scenes
+have more than one reasonable answer, so a single expected value would fail the model for no
+good reason. The case passes when the chosen maneuver is in the array.
+
+Reading the table: each row is one case with the chosen maneuver, abbreviated fall, 1hop, 2hop
+or climb, its probability, and PASS or FAIL for each format. The summary gives the pass count
+per format, the mean margin, the failure list, token totals, mean and p95 latency, and the
+recommended format.
+
+Margin: the probability of the chosen maneuver minus the highest probability among the
+maneuvers that are not in the expected set. Positive means the model preferred an acceptable
+answer over every unacceptable one. The harness reports the mean over the 25 cases.
+
+Failures print the full maneuver distribution, the exact state sent, and the `read` and `danger`
+answers, so you can see what the model understood.
 
 Pass bar: the best format must reach at least 22 of 25, and cases 6, 7, 24, 25 must pass. Those
-four are the ground danger, ceiling danger, and the two following-gap sign tests. A sign error
+four are the ground danger, ceiling danger, and the two next-opening sign tests. A sign error
 there means the vocabulary is lying to the model.
 
 Exit codes: 0 pass, 1 below the bar, 2 transport or configuration failure. Do not wire the game
 until it exits 0. On a 1, adjust the vocabulary or the question criteria in the shared files,
 bump `JevTranslator.VERSION`, note the change here, and re-run.
 
-Chosen format: TBD after calibration.
+`--dry-run` prints every scene in both formats without sending anything. Use it after any
+vocabulary change.
+
+Chosen format: JSON. In the v1.0.0 run the formats tied. In the v1.1.0 run JSON led prose
+by 16 to 12, and the TypeSafe docs recommend sending state as an object. Prose is kept in the
+harness as a comparison only.
+
+### Calibration log
+
+**v1.0.0, noul flap design.** JSON 23/25, prose 23/25. Failures: #2, the debatable case of
+falling in the middle with the pipe far away; #24 and #25, both following-gap cases. Mean margin
+about 0.15 on the old `abs(p - 0.5)` metric. 50 requests, 36.7k input tokens, mean latency
+367 ms, p95 743 ms.
+
+What the run taught us:
+
+- The following-gap phrases did not land. Jev sat at 0.39 to 0.56 on #24 and #25, which is the
+  model saying it has no opinion. That produced the `next_opening` rewording in v1.1.0.
+- The latency was two to three times the draft estimate. Combined with the flap physics, the
+  per-frame yes/no question could not climb. That produced the `maneuver` question in v1.1.0.
+
+**v1.1.0, maneuver design, first wording.** JSON 16/25, prose 12/25, mean margin 0.21. Nine
+JSON failures, all the same shape: the bird above the opening or rising, Jev picking `one_hop`
+instead of `let_it_fall`. Its `read` answer was right in every one of them, so perception was
+fine and the option descriptions were the problem. "A short bounce that roughly holds the
+current height" read as the safe default, and nothing said that not flapping is how the bird
+goes down. 50 requests, 38.5k input tokens, mean latency 349 ms, p95 857 ms.
+
+**v1.1.0, maneuver design, reworded criteria.** JSON only, 22/25, mean margin 0.55. Each
+option now leads with its direction (descend, hold height, climb a little, climb a lot) and
+the instructions say that flapping is the only way up and not flapping the only way down.
+Every "too high" case flipped to `let_it_fall` at 0.73 to 0.99. Remaining failures: #19, where
+"level with the bottom pipe" was read as aligned; #25, where "well below this opening" was
+still not read as a statement about the bird; #10, `climb_hard` at 45 px below, aggressive
+but defensible. 25 requests, 21.6k input tokens, mean latency 387 ms.
+
+**v1.2.0, bird-relative phrases.** JSON only, 23/25, mean margin 0.72, gate passed (exit 0).
+Cases 6, 7, 24, 25 all pass; #19 now `climb_hard` at 0.95 and #25 `let_it_fall` at 0.47.
+Remaining misses: #3, rising fast in the middle with the pipe far, `one_hop` at 0.48 against
+`let_it_fall`; #10 as before. Both are borderline by design of the case, not model errors
+worth another wording round. 25 requests, 21.6k input tokens, mean latency 386 ms, p95 803 ms.
+This is the version wired into the game.
 
 ## Known deviations
 
@@ -282,8 +389,13 @@ Chosen format: TBD after calibration.
   `radius - 10`, which reads as a 12.5 radius. The translator uses 15, the real collision
   radius, via `JEV_COLLISION_R = BIRD_R - 10` in `data/constants.js`. If the collision maths
   ever changes, `JEV_COLLISION_R` must change with it.
-- **Latency.** Nine frames between describing and acting is 40 to 60 px of bird movement. This
-  is part of the experiment, not a bug to paper over.
+- **Latency.** Measured at 367 ms in the harness and about 280 ms in the browser, roughly 17
+  frames. The maneuver plan is the answer to it, not a workaround for it. The bird still acts on
+  a picture of the world that is a sixth of a second old. That is part of the experiment.
+- **Flap spacing is code, not model.** The 8 frame gap between the flaps of one maneuver is a
+  constant in the code. Jev chooses how many flaps, never when.
+- **No restart while dead.** The bird waits for a click. This is a cost decision, not a game
+  design one.
 
 ## Versioning
 
@@ -292,5 +404,12 @@ the prose template. Bump the patch number for wording that does not move a bound
 minor number when a threshold moves or a phrase changes meaning. Bump the major number when the
 state shape or the question set changes.
 
-Every bump means the previous calibration run is void. Re-run `npm run calibrate` and update the
-chosen format line above.
+Current version is 1.2.0. 1.1.0 carried the `next_opening` key rename, the prose change for
+being between the pipes, and the `maneuver` question that replaced the `flap` noul. 1.2.0
+made the two extreme `place_in_gap` phrases and all `next_opening` phrases bird-relative and
+reworded the maneuver criteria. By the rule above a question set change is a major bump; these
+stayed at minor because the scene was not wired into the game yet and no calibration of the
+new design had been published. The next question set change bumps the major number.
+
+Every bump means the previous calibration run is void. Re-run `npm run calibrate`, update the
+chosen format line, and add an entry to the calibration log.

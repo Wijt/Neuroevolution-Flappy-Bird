@@ -8,6 +8,10 @@
  *
  *   node harness/calibrate.js [--repeat=N] [--format=json|prose|both] [--dry-run]
  *
+ * The game acts on the `maneuver` choice, so this harness scores that choice.
+ * Each case lists the maneuvers a human pilot would accept; the case passes
+ * when the chosen maneuver is one of them.
+ *
  * Exit codes: 0 pass, 1 calibration below the bar, 2 config/transport failure.
  */
 
@@ -26,6 +30,14 @@ const CONCURRENCY = 4;
 const REQUEST_TIMEOUT_MS = 20000;
 const PASS_BAR = 22;
 const CRITICAL_CASES = [6, 7, 24, 25];
+
+const MANEUVERS = ["let_it_fall", "one_hop", "two_hops", "climb_hard"];
+const SHORT = {
+    let_it_fall: "fall",
+    one_hop: "1hop",
+    two_hops: "2hop",
+    climb_hard: "climb"
+};
 
 const CANVAS_HEIGHT = 800;
 const GROUND_Y = 750;
@@ -65,32 +77,35 @@ function scene(opts) {
     };
 }
 
+// `expect` is the set of maneuvers a human pilot would accept for the case.
 const CASES = [
-    { name: "centre, barely drifting, pipe far", expect: "no_flap", input: scene({ offset: 0, v: 0.2, pipe: PIPE_FAR }) },
-    { name: "centre, falling fast, pipe far", expect: "flap", input: scene({ offset: 0, v: 5, pipe: PIPE_FAR }) },
-    { name: "centre, rising fast, pipe far", expect: "no_flap", input: scene({ offset: 0, v: -5, pipe: PIPE_FAR }) },
-    { name: "ground close, falling", expect: "flap", input: scene({ birdY: 740, v: 4, pipe: PIPE_FAR }) },
-    { name: "ground close, dropping fast", expect: "flap", input: scene({ birdY: 730, v: 6, pipe: PIPE_FAR }) },
-    { name: "ceiling close, still rising", expect: "no_flap", input: scene({ birdY: 20, v: -5, pipe: PIPE_FAR }) },
-    { name: "ceiling close, dropping fast", expect: "no_flap", input: scene({ birdY: 20, v: 6, pipe: PIPE_FAR }) },
-    { name: "60 below gap, pipe close ahead", expect: "flap", input: scene({ offset: 60, pipe: PIPE_CLOSE }) },
-    { name: "60 above gap, pipe close ahead", expect: "no_flap", input: scene({ offset: -60, pipe: PIPE_CLOSE }) },
-    { name: "45 below gap, pipe in front", expect: "flap", input: scene({ offset: 45, pipe: PIPE_IN_FRONT }) },
-    { name: "45 above gap, pipe in front", expect: "no_flap", input: scene({ offset: -45, pipe: PIPE_IN_FRONT }) },
-    { name: "between pipes, centred, still", expect: "no_flap", input: scene({ offset: 0, v: 0, pipe: PIPE_BETWEEN }) },
-    { name: "between pipes, 40 below, falling", expect: "flap", input: scene({ offset: 40, v: 5, pipe: PIPE_BETWEEN }) },
-    { name: "between pipes, 40 above, rising", expect: "no_flap", input: scene({ offset: -40, v: -3, pipe: PIPE_BETWEEN }) },
-    { name: "25 below gap, dropping fast", expect: "flap", input: scene({ offset: 25, v: 7, pipe: PIPE_SOME_DISTANCE }) },
-    { name: "25 above gap, shooting up", expect: "no_flap", input: scene({ offset: -25, v: -6, pipe: PIPE_SOME_DISTANCE }) },
-    { name: "centred, falling, pipe close ahead", expect: "flap", input: scene({ offset: 0, v: 3.5, pipe: PIPE_CLOSE }) },
-    { name: "centred, hanging, just flapped", expect: "no_flap", input: scene({ offset: 0, v: -0.5, framesSinceFlap: 3, pipe: PIPE_FAR }) },
-    { name: "gap high above the bird", expect: "flap", input: scene({ gapCenter: 200, birdY: 400, pipe: PIPE_SOME_DISTANCE }) },
-    { name: "gap well below the bird", expect: "no_flap", input: scene({ gapCenter: 600, birdY: 400, pipe: PIPE_SOME_DISTANCE }) },
-    { name: "low over the ground, falling", expect: "flap", input: scene({ birdY: 700, v: 3, pipe: PIPE_VERY_FAR }) },
-    { name: "high near the ceiling, falling", expect: "no_flap", input: scene({ birdY: 40, v: 3, pipe: PIPE_FAR }) },
-    { name: "slightly low, falling, pipe in front", expect: "flap", input: scene({ offset: 10, v: 5.5, pipe: PIPE_IN_FRONT }) },
-    { name: "between pipes, next gap much higher", expect: "flap", input: scene({ offset: 0, v: 0, pipe: PIPE_BETWEEN, followingGapCenter: 280 }) },
-    { name: "between pipes, next gap much lower", expect: "no_flap", input: scene({ offset: 0, v: 0, pipe: PIPE_BETWEEN, followingGapCenter: 520 }) }
+    { name: "centre, barely drifting, pipe far", expect: ["let_it_fall", "one_hop"], input: scene({ offset: 0, v: 0.2, pipe: PIPE_FAR }) },
+    // #2 is debatable: the bird is falling but the pipe is far away, so both
+    // catching it now and letting it drop a while longer are defensible.
+    { name: "centre, falling fast, pipe far", expect: ["one_hop", "let_it_fall"], input: scene({ offset: 0, v: 5, pipe: PIPE_FAR }) },
+    { name: "centre, rising fast, pipe far", expect: ["let_it_fall"], input: scene({ offset: 0, v: -5, pipe: PIPE_FAR }) },
+    { name: "ground close, falling", expect: ["two_hops", "climb_hard"], input: scene({ birdY: 740, v: 4, pipe: PIPE_FAR }) },
+    { name: "ground close, dropping fast", expect: ["climb_hard", "two_hops"], input: scene({ birdY: 730, v: 6, pipe: PIPE_FAR }) },
+    { name: "ceiling close, still rising", expect: ["let_it_fall"], input: scene({ birdY: 20, v: -5, pipe: PIPE_FAR }) },
+    { name: "ceiling close, dropping fast", expect: ["let_it_fall"], input: scene({ birdY: 20, v: 6, pipe: PIPE_FAR }) },
+    { name: "60 below gap, pipe close ahead", expect: ["two_hops", "climb_hard"], input: scene({ offset: 60, pipe: PIPE_CLOSE }) },
+    { name: "60 above gap, pipe close ahead", expect: ["let_it_fall"], input: scene({ offset: -60, pipe: PIPE_CLOSE }) },
+    { name: "45 below gap, pipe in front", expect: ["two_hops", "one_hop"], input: scene({ offset: 45, pipe: PIPE_IN_FRONT }) },
+    { name: "45 above gap, pipe in front", expect: ["let_it_fall"], input: scene({ offset: -45, pipe: PIPE_IN_FRONT }) },
+    { name: "between pipes, centred, still", expect: ["one_hop", "let_it_fall"], input: scene({ offset: 0, v: 0, pipe: PIPE_BETWEEN }) },
+    { name: "between pipes, 40 below, falling", expect: ["two_hops", "climb_hard"], input: scene({ offset: 40, v: 5, pipe: PIPE_BETWEEN }) },
+    { name: "between pipes, 40 above, rising", expect: ["let_it_fall"], input: scene({ offset: -40, v: -3, pipe: PIPE_BETWEEN }) },
+    { name: "25 below gap, dropping fast", expect: ["two_hops", "one_hop"], input: scene({ offset: 25, v: 7, pipe: PIPE_SOME_DISTANCE }) },
+    { name: "25 above gap, shooting up", expect: ["let_it_fall"], input: scene({ offset: -25, v: -6, pipe: PIPE_SOME_DISTANCE }) },
+    { name: "centred, falling, pipe close ahead", expect: ["one_hop", "two_hops"], input: scene({ offset: 0, v: 3.5, pipe: PIPE_CLOSE }) },
+    { name: "centred, hanging, just flapped", expect: ["let_it_fall", "one_hop"], input: scene({ offset: 0, v: -0.5, framesSinceFlap: 3, pipe: PIPE_FAR }) },
+    { name: "gap high above the bird", expect: ["climb_hard", "two_hops"], input: scene({ gapCenter: 200, birdY: 400, pipe: PIPE_SOME_DISTANCE }) },
+    { name: "gap well below the bird", expect: ["let_it_fall"], input: scene({ gapCenter: 600, birdY: 400, pipe: PIPE_SOME_DISTANCE }) },
+    { name: "low over the ground, falling", expect: ["two_hops", "climb_hard"], input: scene({ birdY: 700, v: 3, pipe: PIPE_VERY_FAR }) },
+    { name: "high near the ceiling, falling", expect: ["let_it_fall"], input: scene({ birdY: 40, v: 3, pipe: PIPE_FAR }) },
+    { name: "slightly low, falling, pipe in front", expect: ["one_hop", "two_hops"], input: scene({ offset: 10, v: 5.5, pipe: PIPE_IN_FRONT }) },
+    { name: "between pipes, next opening well above", expect: ["two_hops", "one_hop", "climb_hard"], input: scene({ offset: 0, v: 0, pipe: PIPE_BETWEEN, followingGapCenter: 280 }) },
+    { name: "between pipes, next opening well below", expect: ["let_it_fall"], input: scene({ offset: 0, v: 0, pipe: PIPE_BETWEEN, followingGapCenter: 520 }) }
 ];
 
 /* ------------------------------------------------------------------- args */
@@ -131,7 +146,9 @@ function parseArgs(argv) {
 
 function buildBody(format, described) {
     if (format === "json") return described.state;
-    return { rules: JevTranslator.RULES_TEXT, situation: described.prose };
+    // The prose already starts with RULES_TEXT, so the rules must not be
+    // repeated in a second field.
+    return { situation: described.prose };
 }
 
 function pad(text, width) {
@@ -155,6 +172,23 @@ function percentile(sorted, q) {
     if (sorted.length === 0) return 0;
     const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(q * sorted.length) - 1));
     return sorted[index];
+}
+
+function shortName(maneuver) {
+    return SHORT[maneuver] || maneuver;
+}
+
+function shortList(maneuvers) {
+    return maneuvers.map(shortName).join(",");
+}
+
+function formatDistribution(probabilities) {
+    return MANEUVERS
+        .map(function (m) {
+            const p = Number(probabilities && probabilities[m]);
+            return shortName(m) + "=" + (Number.isFinite(p) ? p.toFixed(2) : "n/a");
+        })
+        .join("  ");
 }
 
 async function runPool(tasks, limit, worker) {
@@ -209,16 +243,19 @@ async function callApi(body, apiKey) {
 
         const json = await response.json();
         const answers = json && json.answers;
-        const p = answers && answers.flap ? Number(answers.flap.noul) : NaN;
+        const maneuver = answers && answers.maneuver;
+        const choice = maneuver && maneuver.choice;
+        const probabilities = maneuver && maneuver.probabilities;
 
-        if (!Number.isFinite(p)) {
-            return { ok: false, latencyMs: latencyMs, error: "missing answers.flap.noul" };
+        if (!choice || !probabilities) {
+            return { ok: false, latencyMs: latencyMs, error: "missing answers.maneuver.choice / probabilities" };
         }
 
         return {
             ok: true,
             latencyMs: latencyMs,
-            p: p,
+            choice: choice,
+            probabilities: probabilities,
             answers: answers,
             usage: json.usage || {}
         };
@@ -237,12 +274,13 @@ async function callApi(body, apiKey) {
 
 function dryRun(described) {
     console.log("dry run - no network. translator v" + JevTranslator.VERSION +
-        ", flap threshold " + JevQuestions.FLAP_THRESHOLD + "\n");
+        ", hops " + JSON.stringify(JevQuestions.HOPS) +
+        ", spacing " + JevQuestions.HOP_SPACING_FRAMES + " frames\n");
 
     CASES.forEach(function (c, i) {
         const d = described[i];
         console.log("#" + (i + 1) + "  " + c.name);
-        console.log("    expect: " + c.expect);
+        console.log("    expect: " + c.expect.join(" | "));
         console.log("    state : " + JSON.stringify(d.state, null, 4).split("\n").join("\n    "));
         console.log("    prose : " + d.prose);
         console.log("");
@@ -272,7 +310,7 @@ async function main() {
     const results = {};
     for (const format of opts.formats) {
         results[format] = CASES.map(function () {
-            return { ps: [], answers: null, errors: [] };
+            return { dists: [], answers: null, errors: [] };
         });
     }
 
@@ -302,7 +340,7 @@ async function main() {
             return;
         }
 
-        slot.ps.push(out.p);
+        slot.dists.push(out.probabilities);
         if (!slot.answers) slot.answers = out.answers;
         totals.inputTokens += Number(out.usage.input_tokens) || 0;
         totals.outputTokens += Number(out.usage.output_tokens) || 0;
@@ -335,23 +373,58 @@ async function main() {
     process.exit(1);
 }
 
+// Average the per-maneuver probabilities over the repeats of one case.
+function averageDistribution(dists) {
+    const avg = {};
+    for (const m of MANEUVERS) {
+        const values = dists
+            .map(function (d) { return Number(d && d[m]); })
+            .filter(function (v) { return Number.isFinite(v); });
+        avg[m] = values.length > 0 ? mean(values) : 0;
+    }
+    return avg;
+}
+
+function argMax(distribution) {
+    let best = null;
+    for (const m of MANEUVERS) {
+        if (best === null || distribution[m] > distribution[best]) best = m;
+    }
+    return best;
+}
+
+// Margin: probability of the chosen maneuver minus the best probability among
+// the maneuvers that are NOT acceptable for the case. Positive is good.
+function marginFor(distribution, chosen, expect) {
+    const rivals = MANEUVERS.filter(function (m) { return expect.indexOf(m) === -1; });
+    if (rivals.length === 0) return distribution[chosen];
+    let bestRival = 0;
+    for (const m of rivals) {
+        if (distribution[m] > bestRival) bestRival = distribution[m];
+    }
+    return distribution[chosen] - bestRival;
+}
+
 function buildReport(opts, results) {
     const summaries = {};
 
     for (const format of opts.formats) {
         const cases = results[format].map(function (slot, i) {
-            const hasData = slot.ps.length > 0;
-            const p = hasData ? mean(slot.ps) : NaN;
-            const spread = hasData ? Math.max.apply(null, slot.ps) - Math.min.apply(null, slot.ps) : 0;
-            const act = hasData ? (p >= JevQuestions.FLAP_THRESHOLD ? "flap" : "no_flap") : null;
+            const hasData = slot.dists.length > 0;
+            const expect = CASES[i].expect;
+            const distribution = hasData ? averageDistribution(slot.dists) : null;
+            const act = distribution ? argMax(distribution) : null;
+            const p = distribution ? distribution[act] : NaN;
+            const margin = distribution ? marginFor(distribution, act, expect) : NaN;
             return {
                 index: i,
                 name: CASES[i].name,
-                expect: CASES[i].expect,
+                expect: expect,
+                distribution: distribution,
                 p: p,
-                spread: spread,
+                margin: margin,
                 act: act,
-                pass: act !== null && act === CASES[i].expect,
+                pass: act !== null && expect.indexOf(act) !== -1,
                 errors: slot.errors,
                 answers: slot.answers
             };
@@ -359,8 +432,8 @@ function buildReport(opts, results) {
 
         const passes = cases.filter(function (c) { return c.pass; }).length;
         const margins = cases
-            .filter(function (c) { return Number.isFinite(c.p); })
-            .map(function (c) { return Math.abs(c.p - JevQuestions.FLAP_THRESHOLD); });
+            .filter(function (c) { return Number.isFinite(c.margin); })
+            .map(function (c) { return c.margin; });
 
         summaries[format] = { cases: cases, passes: passes, meanMargin: mean(margins) };
     }
@@ -380,33 +453,26 @@ function buildReport(opts, results) {
 function printReport(report, opts, described, totals, latencies) {
     const formats = opts.formats;
     const nameWidth = Math.max.apply(null, CASES.map(function (c) { return c.name.length; }).concat([4]));
-    const pWidth = opts.repeat > 1 ? 12 : 5;
-    const cellWidth = pWidth + 14;
+    const expWidth = Math.max.apply(null, CASES.map(function (c) { return shortList(c.expect).length; }).concat([3])) + 2;
+    const cellWidth = 22;
 
-    let header = pad("#", 4) + pad("case", nameWidth + 2) + pad("exp", 9);
+    let header = pad("#", 4) + pad("case", nameWidth + 2) + pad("expect", expWidth);
     for (const format of formats) {
-        header += pad(padLeft("p", pWidth) + "  act  res", cellWidth);
+        header += pad(pad("act", 7) + padLeft("p", 5) + "  res", cellWidth);
     }
-    console.log("\ntranslator v" + JevTranslator.VERSION + " | threshold " +
-        JevQuestions.FLAP_THRESHOLD + " | repeat " + opts.repeat +
+    console.log("\ntranslator v" + JevTranslator.VERSION + " | maneuver hops " +
+        JSON.stringify(JevQuestions.HOPS) + " | repeat " + opts.repeat +
         " | formats: " + formats.join(", "));
     console.log(header);
     console.log("-".repeat(header.length));
 
     for (let i = 0; i < CASES.length; i++) {
-        let line = pad(i + 1, 4) + pad(CASES[i].name, nameWidth + 2) + pad(CASES[i].expect, 9);
+        let line = pad(i + 1, 4) + pad(CASES[i].name, nameWidth + 2) + pad(shortList(CASES[i].expect), expWidth);
         for (const format of formats) {
             const c = report.summaries[format].cases[i];
-            let pText;
-            if (!Number.isFinite(c.p)) {
-                pText = padLeft("ERR", pWidth);
-            } else if (opts.repeat > 1) {
-                pText = padLeft(c.p.toFixed(2) + "+-" + c.spread.toFixed(2), pWidth);
-            } else {
-                pText = padLeft(c.p.toFixed(2), pWidth);
-            }
-            const act = c.act === "flap" ? "F" : (c.act === null ? "?" : "-");
-            line += pad(pText + "  " + pad(act, 4) + " " + pad(c.pass ? "PASS" : "FAIL", 5), cellWidth);
+            const act = c.act === null ? "?" : shortName(c.act);
+            const pText = Number.isFinite(c.p) ? padLeft(c.p.toFixed(2), 5) : padLeft("ERR", 5);
+            line += pad(pad(act, 7) + pText + "  " + pad(c.pass ? "PASS" : "FAIL", 5), cellWidth);
         }
         console.log(line);
     }
@@ -415,7 +481,7 @@ function printReport(report, opts, described, totals, latencies) {
         const s = report.summaries[format];
         const pct = ((s.passes / CASES.length) * 100).toFixed(0);
         console.log("\n[" + format + "] " + s.passes + "/" + CASES.length + " passed (" + pct + "%)" +
-            ", mean margin |p-0.5| = " + s.meanMargin.toFixed(3));
+            ", mean margin (chosen minus best unacceptable) = " + s.meanMargin.toFixed(3));
         const failures = s.cases.filter(function (c) { return !c.pass; });
         if (failures.length === 0) {
             console.log("  failures: none");
@@ -438,9 +504,11 @@ function printReport(report, opts, described, totals, latencies) {
         if (failures.length === 0) continue;
         console.log("\n--- failing cases, format " + format + " ---");
         for (const c of failures) {
-            console.log("\n#" + (c.index + 1) + " " + c.name + " - expected " + c.expect +
-                ", got " + (c.act || "no answer") +
-                (Number.isFinite(c.p) ? " (p=" + c.p.toFixed(2) + ")" : ""));
+            console.log("\n#" + (c.index + 1) + " " + c.name + " - expected one of " +
+                c.expect.join(", ") + ", got " + (c.act || "no answer"));
+            if (c.distribution) {
+                console.log("maneuver: " + formatDistribution(c.distribution));
+            }
             console.log("state sent: " + JSON.stringify(buildBody(format, described[c.index]), null, 4));
             if (c.errors.length > 0) {
                 console.log("errors: " + c.errors.join(" | "));

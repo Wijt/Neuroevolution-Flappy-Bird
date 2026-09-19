@@ -126,29 +126,6 @@ body {
     word-break: break-word;
 }
 
-.jev-bar {
-    position: relative;
-    height: 12px;
-    margin: 6px 0 3px 0;
-    background: #162447;
-    border: 1px solid #1f4068;
-}
-
-.jev-bar-fill {
-    width: 0%;
-    height: 100%;
-    background: #e43f5a;
-}
-
-.jev-tick {
-    position: absolute;
-    top: -2px;
-    left: 50%;
-    width: 1px;
-    height: 16px;
-    background: #dfe6f3;
-}
-
 .jev-val {
     color: #dfe6f3;
 }
@@ -185,6 +162,10 @@ body {
 
 .jev-read-p {
     text-align: right;
+}
+
+.jev-read + .jev-val {
+    margin-top: 4px;
 }
 
 @media (max-width: 1000px) {

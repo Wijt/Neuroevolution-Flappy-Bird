@@ -1,8 +1,11 @@
 // Jev flies the bird. The loop never waits for an answer: it keeps running and
 // uses whatever came back, so a slow request costs a few frames of staleness
 // instead of a freeze. Code only describes the scene, Jev decides.
+//
+// Jev is not asked "flap right now?" anymore. One hop is worth about 45 px and the
+// round trip costs ~17 frames, so a per-frame yes/no could never climb. Jev picks a
+// maneuver instead and the scene spends it as a little hop plan.
 const JEV_TICK_EVERY = 9;
-const JEV_DEATH_HOLD_FRAMES = 90;
 
 class JevScene extends Scene {
     constructor() {
@@ -22,16 +25,17 @@ class JevScene extends Scene {
 
         this.frame = 0;
         this.runId = 0;
-        this.flapSeq = 0;
         this.framesSinceFlap = 999;
-        this.pendingFlap = false;
         this.lastTickFrame = 0;
+
+        //the hop plan: how many flaps are still owed and when the next one is due
+        this.hopsRemaining = 0;
+        this.nextHopFrame = 0;
 
         this.lastDescription = null;
         this.lastFields = null;
         this.lastAnswers = null;
 
-        this.deadFrames = 0;
         this.abortedOnDeath = false;
     }
 
@@ -82,16 +86,16 @@ class JevScene extends Scene {
 
         this.frame = 0;
         this.runId++;
-        this.flapSeq = 0;
         this.framesSinceFlap = 999;
-        this.pendingFlap = false;
         this.lastTickFrame = -JEV_TICK_EVERY;
+
+        this.hopsRemaining = 0;
+        this.nextHopFrame = 0;
 
         this.lastDescription = null;
         this.lastFields = null;
         this.lastAnswers = null;
 
-        this.deadFrames = 0;
         this.abortedOnDeath = false;
 
         this.gameStarted = true;
@@ -107,17 +111,21 @@ class JevScene extends Scene {
         if (!this.bird.live) {
             if (!this.abortedOnDeath) {
                 this.client.abortAll(); //no calls while dead
+                this.clearPlan();
                 this.abortedOnDeath = true;
             }
-            this.deadFrames++;
-            //restarting lives here and not in draw(), draw() runs for the active scene only by luck
-            if (this.deadFrames >= JEV_DEATH_HOLD_FRAMES) this.start();
+            //no auto restart, the user clicks when they want another flight
             return;
         }
 
         this.drainAnswers();
 
-        if (this.pendingFlap) this.doFlap();
+        //spend the plan: a hop now, the rest one every HOP_SPACING_FRAMES frames
+        if (this.hopsRemaining > 0 && this.frame >= this.nextHopFrame) {
+            this.doFlap();
+            this.hopsRemaining--;
+            this.nextHopFrame = this.frame + JevQuestions.HOP_SPACING_FRAMES;
+        }
 
         this.framesSinceFlap++;
 
@@ -158,12 +166,15 @@ class JevScene extends Scene {
         this.maybeSend();
     }
 
-    //the only place that flaps; it stamps a new flapSeq so older answers go stale
+    //the only place that flaps
     doFlap() {
         this.bird.jump();
-        this.flapSeq++;
         this.framesSinceFlap = 0;
-        this.pendingFlap = false;
+    }
+
+    clearPlan() {
+        this.hopsRemaining = 0;
+        this.nextHopFrame = 0;
     }
 
     buildDescription() {
@@ -192,15 +203,18 @@ class JevScene extends Scene {
         let message = this.client.takeAnswer();
         while (message != null) {
             let tag = message.tag || {};
-            //an answer about a scene we already flapped out of is worthless
-            if (tag.runId !== this.runId || tag.flapSeq !== this.flapSeq) {
+            //only an answer about a flight that is already over is worthless
+            if (tag.runId !== this.runId) {
                 this.client.stats.discarded++;
             } else {
                 this.lastAnswers = message.answers;
-                let flap = message.answers.flap;
-                if (flap != null && flap.noul >= JevQuestions.FLAP_THRESHOLD) {
-                    this.pendingFlap = true;
-                }
+
+                //a newer answer replaces what is left of the old plan, that is the freshness rule now
+                let maneuver = message.answers.maneuver;
+                let choice = maneuver != null ? maneuver.choice : null;
+                let hops = JevQuestions.HOPS[choice];
+                this.hopsRemaining = (typeof hops === "number") ? hops : 0;
+                this.nextHopFrame = this.frame; //so the first hop lands this frame
             }
             message = this.client.takeAnswer();
         }
@@ -216,7 +230,6 @@ class JevScene extends Scene {
 
         let sent = this.client.send(this.lastDescription.state, JevQuestions.build(), {
             runId: this.runId,
-            flapSeq: this.flapSeq,
             frame: this.frame
         });
 
@@ -236,7 +249,11 @@ class JevScene extends Scene {
         return {
             status: status,
             fields: this.lastFields,
-            flap: answers.flap || null,
+            maneuver: answers.maneuver || null,
+            plan: {
+                hopsRemaining: this.hopsRemaining,
+                nextHopIn: Math.max(0, this.nextHopFrame - this.frame)
+            },
             read: answers.read || null,
             danger: answers.danger || null,
             meta: {
@@ -274,7 +291,7 @@ class JevScene extends Scene {
         pop();
 
         if (!this.bird.live) {
-            push(); //dead panel, the restart itself happens in update()
+            push(); //dead panel, nothing happens here until the user clicks
                 noStroke();
                 fill(0, 0, 0, 255 * 0.70);
                 rect(0, 0, width, height);
@@ -285,18 +302,26 @@ class JevScene extends Scene {
                 text("flight ended", width/2, height/2 - 20);
                 textSize(22);
                 text("score " + this.bird.score, width/2, height/2 + 14);
-
-                //thin bar that fills while the hold runs out
-                let barWidth = width * 0.4;
-                let progress = min(this.deadFrames / JEV_DEATH_HOLD_FRAMES, 1);
-                fill(255, 255, 255, 60);
-                rect(width/2 - barWidth/2, height/2 + 40, barWidth, 4);
-                fill(color(BIRD_COLOR));
-                rect(width/2 - barWidth/2, height/2 + 40, barWidth * progress, 4);
+                textSize(18);
+                text("click to fly again", width/2, height/2 + 48);
             pop();
         }
 
         if (this.panel != null) this.panel.update(this.buildView());
+    }
+
+    //Jev is the pilot, so a click on a live bird does nothing; a dead one restarts
+    mouseReleased() {
+        if (!this.gameStarted) return;
+        if (this.bird == null || this.bird.live) return;
+        this.start();
+    }
+
+    keyPressed() {
+        if (!this.gameStarted) return;
+        if (this.bird == null || this.bird.live) return;
+        //space or enter, same as a click
+        if (keyCode === 32 || keyCode === 13) this.start();
     }
 
     exit() {
