@@ -673,9 +673,15 @@ class WatchScene extends Scene {
             const chosen = plan === this.currentPlan;
             stroke(chosen ? color(255, 255, 255, 230) : color(255, 255, 255, 55));
             strokeWeight(chosen ? 2 : 1);
+            // Forecasts are computed at the window start. `windowTick` ticks have already
+            // elapsed, so drop the points already flown and shift the rest so that the
+            // next predicted point sits one pipe-step ahead of the bird.
+            const elapsed = this.windowTick;
             beginShape();
+            vertex(this.bird.pos.x, this.bird.pos.y);
             for (const point of forecast.trajectory) {
-                vertex(this.bird.pos.x + point.tick * PIPE_SCROOL, point.y);
+                if (point.tick < elapsed) continue;
+                vertex(this.bird.pos.x + (point.tick - elapsed + 1) * PIPE_SCROOL, point.y);
             }
             endShape();
         }
