@@ -355,45 +355,59 @@ General LLM agents on games:
 The conclusion is consistent across all of these. Real-time play works only with small fast
 models on structured text. Screenshot LLM agents pause the game.
 
-## 9. Panel, overlay and keys
+## 9. Dashboard, overlay and keys
 
-The layout follows the PlayJev demo page (github.com/OmniJev/PlayJev): the game canvas
-with an instrument panel to its right on wide screens, and a collapsible sheet at the bottom
-on phones. Code: `data/jev/jev-panel.js` (plain DOM plus one chart canvas) and
-`data/jev/jev-hud.js` (the overlay drawn in p5).
+The final layout is a full page dashboard around the game, after a terminal style reference:
+a near black page, one monospace typeface, caps labels, hairlines, and no boxes except the
+frame around the flight. Nothing is ever drawn over the game view. Code: `data/jev/jev-panel.js`
+(plain DOM plus two small canvases) and `data/jev/jev-hud.js` (the overlay drawn in p5).
 
-Panel, top to bottom:
+The dashboard owns the layout. On entering the scene it measures a box for the flight
+(window height minus the header, the three big numbers and the chrome; 9:16 inside it),
+resizes the p5 canvas to it and moves the canvas into the box; on leaving it puts the canvas
+back exactly as `sketch.js` left it, so play, train and watch are untouched. Under 1000 px
+wide the two columns stack and the page scrolls.
 
-- "Flappy Jev" and the score.
-- An explainer that says what actually happens: "text snapshot, the only input" and
-  "option list, flap · wait" feed "one forward pass, Jev 1.13", which returns "a probability
-  for every option". The flap and wait bars are live; the chosen one is filled.
-- pause / restart, and the model chip.
-- speed: 1/8x, 1/4x, 1/2x, 1x. Changes the world speed at once (`jevSetTimeScale`).
-- confidence of the last applied answer.
-- "confidence through the flight": a line over time with a tick strip under it, red for
-  flaps, faint for answers that were dropped.
-- Footer in plain words: decisions a second, answer time, tokens a minute, cost an hour,
-  and how far ahead the bird is described. No frame counts anywhere in the UI.
+Header: "FLAPPY JEV / TYPESAFE JEV" on the left, "LIVE RUN · 1/4x" (the time scale) on the right.
+
+Left column:
+
+- the title row, "F L A P P Y   J E V" with the flight number at its right.
+- the flight itself, in a 1 px bordered box.
+- three big numbers in a pixel font: score this flight, best this session, decisions applied
+  this flight.
+- a tick strip of the last five seconds of decisions (red for a flap, teal for a wait, dim for
+  a dropped answer) with the rate a second at its end.
+
+Right column:
+
+- "Jev 1.13" and "TypeSafe · System One · text snapshot in, one choice out".
+- NEXT MOVE: flap and wait on a dotted track, the chosen one marked and coloured, and
+  EXECUTING with the word that is being flown (or "waiting for pilot" on a warm start).
+- WHAT JEV SEES: the five phrases and numbers of the last snapshot, and how far ahead it was
+  described.
+- two gauges: confidence of the last applied answer, and answer time on a 0 to 1 s scale.
+- "confidence through the flight": a line over the applied answers with a red dot at every flap.
+- telemetry: inference, network, decisions a second, input tokens this flight, cost an hour,
+  and the engine.
+
+Footer: the keys on the left, "DECISIONS BY JEV" and the flight clock on the right.
 
 Overlay on the canvas, on by default, V toggles it: an outlined ghost at the described
-position with "in 0.38 s", a dashed thread from the real bird, the described pipe's gap
-halves tinted, the two clearances in px to the left of their line, the ruler, and a stacked
-block to the right of the ghost with the decision word and probability, the two words, and
-the lead in seconds. Nothing is drawn over the bird.
+position, a dashed thread from the real bird, the described pipe's gap halves tinted, the two
+clearances in px to the left of their line and the ruler to the pipe. It is the sensory layer
+and nothing else; every number lives in the dashboard. Nothing is drawn over the bird.
 
-Visual rules: tokens as CSS custom properties from the game palette (bird red for flap, the
-alternate palette's teal for wait and amber for dropped), one typeface (IBM Plex Mono),
-sentence case, no gradients, shadows or animation. Three earlier attempts (a DOM dashboard
-with a flow diagram, an all-on-canvas HUD with tickers) were rejected because their labels
-encoded nothing; this one shows the question, the inputs and the answer.
+Visual rules: tokens as CSS custom properties (teal, amber, blue, white, muted, hairline, and
+the bird's red for flap), monospace everywhere except the big digits (Silkscreen), caps labels,
+no gradients, shadows, rounded cards or animation beyond the bars and the chart updating.
 
 | Input | Effect |
 | --- | --- |
 | tap or click while dead | fly again |
-| speed buttons | world speed |
-| pause / restart | as named |
-| P, N, M | pause, one frame, next event |
+| SPACE or P | pause, resume |
+| R | the next flight, now |
+| N, M | one frame, next event (while paused) |
 | V | overlay on or off |
 | D | download the trace as JSONL |
 

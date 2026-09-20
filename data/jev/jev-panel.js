@@ -1,49 +1,64 @@
-// The Jev panel: a flowchart of one decision, laid over the bottom of the game canvas.
+// The Jev dashboard: the whole page around the game, terminal style.
 //
-// What went into the model, one pass, what came out: five tiles, Jev, two answers,
-// wired together for real (the wires are an svg drawn from the tiles' measured
-// positions, so they meet the boxes). Under it a small chart of how sure Jev was
-// through the flight, and a row of tags for the numbers that are true but not
-// the point: answer time, decisions a second, tokens, cost, the lead.
+// Nothing is ever drawn over the game view any more. The dashboard owns the
+// layout: it measures a box for the flight, moves the p5 canvas into it and
+// puts everything else beside it. On the left the flight and its three big
+// numbers, on the right what Jev was told, what it answered and what that cost.
 //
-// Plain DOM so the text is crisp. Built once on mount, written to only when a value
-// changed. Nothing in here animates on its own.
+// Plain DOM, built once on mount, written to only when a value changed. Nothing
+// animates on its own: the bars, the chart and the clock are the only movement.
 
 //#region looks
-//inset from the canvas edges on every side
-const JEV_PANEL_MARGIN = 16;
+//the header row and the three big stats are fixed height, the flight box gets what is left
+const JEV_DASH_HEADER = 56;
+const JEV_DASH_STATS = 150;
 
-//a canvas narrower than this stacks the flowchart instead of laying it across
-const JEV_PANEL_WIDE = 440;
+//the title row, the footer and the paddings around the flight box
+const JEV_DASH_CHROME = 96;
 
-//a tap on the panel must not also count as a tap on the game
+//a window narrower than this stacks the two columns
+const JEV_DASH_WIDE = 1000;
+
+//a window shorter than this tightens the right column so all of it still fits
+const JEV_DASH_SHORT = 820;
+
+//a flight box is never smaller than this, however short the window is
+const JEV_DASH_MIN_H = 240;
+
+//a tap on the dashboard must not also count as a tap on the game
 const JEV_PANEL_TAP_MS = 300;
-
-//the five things one request carries, in the order the flowchart stacks them
-const JEV_PANEL_INPUTS = ["position", "motion", "room above", "room below", "next pipe"];
 
 //the chart keeps this many applied answers
 const JEV_PANEL_CHART_MAX = 240;
 
+//the tick strip under the stats shows this many seconds of decisions
+const JEV_DASH_TICK_SECONDS = 5;
+
 //input tokens cost this much per million (output is free)
 const JEV_PANEL_COST_PER_M = 0.042;
+
+//the five things one request carries, in the order the snapshot lists them
+const JEV_DASH_SEEN = ["POSITION", "MOTION", "ROOM ABOVE", "ROOM BELOW", "NEXT PIPE"];
+
+//the telemetry block, in order
+const JEV_DASH_TELEMETRY = ["INFERENCE", "NETWORK", "DECISIONS", "INPUT TOKENS", "COST", "ENGINE"];
 //#endregion
 
 var JevPanel = (function () {
     var root = null;
     var els = {};
 
-    //folded to the chevron, or the whole thing
-    var open = true;
-
-    //the wall clock of the last tap that landed on the panel
+    //the wall clock of the last tap that landed on the dashboard
     var tapAt = -1e9;
 
     var onResize = null;
-
-    //the wires are redrawn when a tile moved; this remembers the last geometry key
-    var wiresKey = "";
     var frames = 0;
+
+    //the canvas as sketch.js left it, so the other scenes get it back untouched
+    var saved = null;
+
+    //the scene, kept so a window resize can lay the flight out again
+    var host = null;
 
     function now() {
         return (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
@@ -57,11 +72,7 @@ var JevPanel = (function () {
         return node;
     }
 
-    function svgEl(tag) {
-        return document.createElementNS("http://www.w3.org/2000/svg", tag);
-    }
-
-    //the only way text reaches the panel, so a still frame writes nothing
+    //the only way text reaches the dashboard, so a still frame writes nothing
     function setText(node, value) {
         if (node.textContent !== value) node.textContent = value;
     }
@@ -72,99 +83,171 @@ var JevPanel = (function () {
         else node.classList.remove(cls);
     }
 
-    //a tile: a tiny muted name and the live value under it
-    function tile(name) {
-        let node = el("div", "jp-tile");
-        node.appendChild(el("div", "jp-tile-name", name));
-        let value = el("div", "jp-tile-value", "–");
+    //a caps label over a value, the shape every row in here is made of
+    function row(cls, name) {
+        let node = el("div", cls);
+        node.appendChild(el("span", "jd-cap", name));
+        let value = el("span", "jd-val", "–");
         node.appendChild(value);
         return { node: node, value: value };
     }
 
-    //an answer: the word and its probability on one line, filled when it was chosen
-    function output(word) {
-        let node = el("div", "jp-tile jp-out jp-out-" + word);
-        node.appendChild(el("span", "jp-out-name", word));
-        let value = el("span", "jp-out-value", "–");
+    //one of the three big numbers: a small caps label over pixel digits
+    function stat(name, tone) {
+        let node = el("div", "jd-stat");
+        node.appendChild(el("div", "jd-cap", name));
+        let value = el("div", "jd-digits jd-" + tone, "000");
         node.appendChild(value);
         return { node: node, value: value };
     }
 
-    function tag() {
-        let node = el("span", "jp-tag");
-        let strong = el("b", null, "–");
-        let label = el("span", null, "");
-        node.appendChild(strong);
-        node.appendChild(label);
-        return { node: node, strong: strong, label: label };
+    //a probability row: the marker, the word, a bar on a dotted track, the number
+    function probRow(word) {
+        let node = el("div", "jd-prob jd-prob-" + word.toLowerCase());
+        node.appendChild(el("span", "jd-mark", "›"));
+        node.appendChild(el("span", "jd-name", word));
+        let track = el("span", "jd-track");
+        let fill = el("i", "jd-fill");
+        track.appendChild(fill);
+        node.appendChild(track);
+        let value = el("span", "jd-val", "–");
+        node.appendChild(value);
+        return { node: node, fill: fill, value: value };
+    }
+
+    //a gauge row: a caps label, one hairline with a coloured length on it, the number
+    function gaugeRow(name, tone) {
+        let node = el("div", "jd-gauge");
+        node.appendChild(el("span", "jd-cap", name));
+        let track = el("span", "jd-line");
+        let fill = el("i", "jd-fill jd-" + tone);
+        track.appendChild(fill);
+        node.appendChild(track);
+        let value = el("span", "jd-val", "–");
+        node.appendChild(value);
+        return { node: node, fill: fill, value: value };
+    }
+
+    function section(name, note) {
+        let node = el("div", "jd-section");
+        node.appendChild(el("span", "jd-cap", name));
+        if (note != null) node.appendChild(el("span", "jd-cap jd-note", note));
+        return node;
     }
 
     function build() {
-        root = el("div", "jev-panel");
+        root = el("div", "jev-dash");
 
-        els.fold = el("button", "jp-fold");
-        els.fold.type = "button";
-        els.fold.title = "fold";
-        els.fold.appendChild(el("i", null, null));
-        els.fold.addEventListener("click", () => {
-            open = !open;
-            applyOpen();
-        });
-        root.appendChild(els.fold);
+        //#region the header
+        let head = el("div", "jd-head");
+        els.back = el("div", "jd-back-slot");
+        head.appendChild(els.back);
+        head.appendChild(el("div", "jd-cap jd-brand", "FLAPPY JEV / TYPESAFE JEV"));
+        els.live = el("div", "jd-cap jd-teal", "LIVE RUN");
+        head.appendChild(els.live);
+        root.appendChild(head);
+        //#endregion
 
-        let body = el("div", "jp-body");
-        root.appendChild(body);
+        let main = el("div", "jd-main");
+        root.appendChild(main);
 
-        //#region the flowchart
-        let flow = el("div", "jp-flow");
-        els.flow = flow;
+        //#region the left column: the flight and its numbers
+        let left = el("div", "jd-left");
+        els.left = left;
 
-        els.wires = svgEl("svg");
-        els.wires.setAttribute("class", "jp-wires");
-        flow.appendChild(els.wires);
+        let title = el("div", "jd-title");
+        els.gameName = el("div", "jd-game-name", "F L A P P Y   J E V");
+        title.appendChild(els.gameName);
+        els.flight = el("div", "jd-cap jd-muted", "FLIGHT 01");
+        title.appendChild(els.flight);
+        left.appendChild(title);
 
-        let inputs = el("div", "jp-ins");
-        els.inputs = [];
-        for (let i = 0; i < JEV_PANEL_INPUTS.length; i++) {
-            let made = tile(JEV_PANEL_INPUTS[i]);
-            inputs.appendChild(made.node);
-            els.inputs.push(made);
+        els.box = el("div", "jd-box");
+        left.appendChild(els.box);
+
+        let stats = el("div", "jd-stats");
+        els.score = stat("SCORE", "teal");
+        els.best = stat("BEST", "white");
+        els.decisions = stat("DECISIONS", "grey");
+        stats.appendChild(els.score.node);
+        stats.appendChild(els.best.node);
+        stats.appendChild(els.decisions.node);
+        left.appendChild(stats);
+
+        let ticks = el("div", "jd-ticks");
+        els.ticks = el("canvas", "jd-tick-canvas");
+        ticks.appendChild(els.ticks);
+        els.rate = el("span", "jd-val", "–");
+        ticks.appendChild(els.rate);
+        left.appendChild(ticks);
+
+        main.appendChild(left);
+        //#endregion
+
+        //#region the right column: the pilot
+        let right = el("div", "jd-right");
+
+        right.appendChild(el("div", "jd-pilot jd-teal", "Jev 1.13"));
+        right.appendChild(el("div", "jd-cap jd-muted", "TypeSafe · System One · text snapshot in, one choice out"));
+
+        right.appendChild(section("NEXT MOVE", "MODEL PROBABILITIES"));
+        els.flap = probRow("FLAP");
+        els.wait = probRow("WAIT");
+        right.appendChild(els.flap.node);
+        right.appendChild(els.wait.node);
+
+        let executing = el("div", "jd-exec");
+        executing.appendChild(el("span", "jd-cap", "EXECUTING"));
+        els.executing = el("span", "jd-cap jd-teal jd-exec-value", "WAITING FOR PILOT");
+        executing.appendChild(els.executing);
+        right.appendChild(executing);
+
+        right.appendChild(section("WHAT JEV SEES", null));
+        els.seen = [];
+        for (let i = 0; i < JEV_DASH_SEEN.length; i++) {
+            let made = row("jd-row", JEV_DASH_SEEN[i]);
+            right.appendChild(made.node);
+            els.seen.push(made);
         }
-        flow.appendChild(inputs);
+        els.ahead = el("div", "jd-row jd-muted-row");
+        els.ahead.appendChild(el("span", "jd-cap", "DESCRIBED"));
+        els.aheadValue = el("span", "jd-cap", "–");
+        els.ahead.appendChild(els.aheadValue);
+        right.appendChild(els.ahead);
 
-        let jev = el("div", "jp-tile jp-mid");
-        jev.appendChild(el("div", "jp-mid-name", "Jev"));
-        jev.appendChild(el("div", "jp-tile-name", "one forward pass"));
-        els.mid = jev;
-        flow.appendChild(jev);
+        els.confidence = gaugeRow("CONFIDENCE", "teal");
+        els.answerTime = gaugeRow("ANSWER TIME", "blue");
+        right.appendChild(els.confidence.node);
+        right.appendChild(els.answerTime.node);
 
-        let outputs = el("div", "jp-outs");
-        els.flap = output("flap");
-        els.wait = output("wait");
-        outputs.appendChild(els.flap.node);
-        outputs.appendChild(els.wait.node);
-        flow.appendChild(outputs);
+        right.appendChild(section("CONFIDENCE THROUGH THE FLIGHT", null));
+        els.chart = el("canvas", "jd-chart");
+        right.appendChild(els.chart);
 
-        body.appendChild(flow);
+        let telemetry = el("div", "jd-telemetry");
+        els.tel = {};
+        for (let i = 0; i < JEV_DASH_TELEMETRY.length; i++) {
+            let made = row("jd-row", JEV_DASH_TELEMETRY[i]);
+            telemetry.appendChild(made.node);
+            els.tel[JEV_DASH_TELEMETRY[i]] = made;
+        }
+        right.appendChild(telemetry);
+
+        main.appendChild(right);
         //#endregion
 
-        //#region the chart
-        body.appendChild(el("div", "jp-chart-name", "how sure Jev was through the flight"));
-        els.chart = el("canvas", "jp-chart");
-        body.appendChild(els.chart);
+        //#region the footer
+        let foot = el("div", "jd-foot");
+        foot.appendChild(el("div", "jd-cap jd-muted", "SPACE pause  V overlay  R reset  D trace"));
+        let end = el("div", "jd-foot-end");
+        end.appendChild(el("span", "jd-cap jd-muted", "DECISIONS BY JEV"));
+        els.clock = el("span", "jd-cap jd-teal", "00:00");
+        end.appendChild(els.clock);
+        foot.appendChild(end);
+        root.appendChild(foot);
         //#endregion
 
-        //#region the tags
-        let tags = el("div", "jp-tags");
-        els.tags = {};
-        ["answer", "rate", "tokens", "cost", "lead"].forEach(key => {
-            els.tags[key] = tag();
-            tags.appendChild(els.tags[key].node);
-        });
-        body.appendChild(tags);
-        //#endregion
-
-        //a click anywhere in here is the panel's, not the game's
+        //a click anywhere in here is the dashboard's, not the game's
         root.addEventListener("pointerup", () => {
             tapAt = now();
         }, true);
@@ -172,145 +255,59 @@ var JevPanel = (function () {
     //#endregion
 
     //#region layout
-    // An overlay on the canvas and nothing else: it hangs off the bottom of the canvas
-    // rect, inset on every side, never taller than the canvas allows. Folded, it is the
-    // chevron alone in the bottom right corner, clear of the return button.
-    function canvasRect() {
-        let node = document.querySelector("canvas");
-        if (node == null) return null;
-        let rect = node.getBoundingClientRect();
-        if (rect.width === 0 && rect.height === 0) return null;
-        return rect;
+    // The dashboard decides how big the flight is, not sketch.js. The box gets the
+    // window height minus the header, the three big stats and the chrome around
+    // them; the canvas is 9:16 inside it and moves into the box so it scrolls and
+    // resizes with the rest of the page.
+    function canvasElement() {
+        return document.querySelector("canvas");
     }
 
-    function applyLayout() {
-        if (root == null) return;
+    //the canvas is resized and reparented here and nowhere else
+    function layoutGame() {
+        if (root == null) return null;
 
-        let rect = canvasRect();
-        if (rect == null) return;
+        let stacked = window.innerWidth < JEV_DASH_WIDE;
+        setClass(root, "jd-stacked", stacked);
+        //a short window has to give the right column tighter spacing to keep it whole
+        setClass(root, "jd-short", window.innerHeight < JEV_DASH_SHORT);
 
-        root.style.bottom = Math.round(window.innerHeight - rect.bottom + JEV_PANEL_MARGIN) + "px";
-        root.style.maxHeight = Math.round(rect.height * 0.6) + "px";
+        //measure the column with no inline width on it, then give it the one it needs
+        els.left.style.width = "";
+        els.box.style.width = "";
 
-        if (open) {
-            root.style.left = Math.round(rect.left + JEV_PANEL_MARGIN) + "px";
-            root.style.right = "auto";
-            root.style.width = Math.round(rect.width - JEV_PANEL_MARGIN * 2) + "px";
+        let size;
+        if (stacked) {
+            //full width, aspect kept, so the flight is still the biggest thing on a phone
+            let w = Math.max(160, Math.round(els.left.clientWidth));
+            size = { w: w, h: Math.round(w * 16 / 9) };
         } else {
-            root.style.left = "auto";
-            root.style.right = Math.round(window.innerWidth - rect.right + JEV_PANEL_MARGIN) + "px";
-            root.style.width = "auto";
+            let h = window.innerHeight - JEV_DASH_HEADER - JEV_DASH_STATS - JEV_DASH_CHROME;
+            h = Math.max(JEV_DASH_MIN_H, Math.round(h));
+            size = { w: Math.round(h * 9 / 16), h: h };
+            els.left.style.width = size.w + "px";
         }
 
-        setClass(root, "jp-narrow", rect.width < JEV_PANEL_WIDE);
-        wiresKey = "";
-    }
+        els.box.style.width = size.w + "px";
+        els.box.style.height = size.h + "px";
 
-    function applyOpen() {
-        setClass(root, "jp-open", open);
-        applyLayout();
-    }
-    //#endregion
+        //the letter-spaced title has to live inside the column, however narrow it is
+        els.gameName.style.fontSize = Math.max(10, Math.min(14, Math.floor(size.w / 19))) + "px";
 
-    //#region the wires
-    // Orthogonal connectors, measured from where the tiles really are. Every input
-    // leaves its tile, joins a trunk, and the trunk enters Jev; Jev leaves once, a
-    // second trunk fans out to the two answers. The chosen answer's wire is drawn in
-    // its colour and thicker, the other stays a hairline.
-    function centreOf(node, base, side) {
-        let r = node.getBoundingClientRect();
-        let x = side === "right" ? r.right : side === "left" ? r.left : r.left + r.width / 2;
-        let y = side === "top" ? r.top : side === "bottom" ? r.bottom : r.top + r.height / 2;
-        return { x: x - base.left, y: y - base.top };
-    }
-
-    function path(d, stroke, width) {
-        let node = svgEl("path");
-        node.setAttribute("d", d);
-        node.setAttribute("fill", "none");
-        node.setAttribute("stroke", stroke);
-        node.setAttribute("stroke-width", width);
-        node.setAttribute("stroke-linecap", "round");
-        return node;
-    }
-
-    //a small chevron at the end of a wire, pointing along dx,dy
-    function head(x, y, dx, dy, stroke) {
-        let s = 4;
-        let d;
-        if (dx !== 0) d = "M" + (x - s * dx) + " " + (y - s) + " L" + x + " " + y + " L" + (x - s * dx) + " " + (y + s);
-        else d = "M" + (x - s) + " " + (y - s * dy) + " L" + x + " " + y + " L" + (x + s) + " " + (y - s * dy);
-        return path(d, stroke, 1);
-    }
-
-    function drawWires(chosen) {
-        let svg = els.wires;
-        let base = els.flow.getBoundingClientRect();
-        if (base.width === 0) return;
-
-        let narrow = root.classList.contains("jp-narrow");
-        let key = Math.round(base.width) + ":" + Math.round(base.height) + ":" + narrow + ":" + chosen;
-        if (key === wiresKey) return;
-        wiresKey = key;
-
-        while (svg.firstChild) svg.removeChild(svg.firstChild);
-        svg.setAttribute("viewBox", "0 0 " + base.width + " " + base.height);
-
-        let hair = "rgba(230, 233, 242, 0.28)";
-        let flapInk = getComputedStyle(root).getPropertyValue("--flap").trim() || "#e43f5a";
-        let waitInk = getComputedStyle(root).getPropertyValue("--wait").trim() || "#4f8a8b";
-
-        if (!narrow) {
-            //inputs -> trunk -> Jev
-            let mid = centreOf(els.mid, base, "left");
-            let trunkX = mid.x - 28;
-            let ys = els.inputs.map(made => centreOf(made.node, base, "right"));
-            ys.forEach(pt => {
-                svg.appendChild(path("M" + pt.x + " " + pt.y + " H" + trunkX, hair, 1));
-            });
-            let top = Math.min(ys[0].y, mid.y);
-            let bottom = Math.max(ys[ys.length - 1].y, mid.y);
-            svg.appendChild(path("M" + trunkX + " " + top + " V" + bottom, hair, 1));
-            svg.appendChild(path("M" + trunkX + " " + mid.y + " H" + mid.x, hair, 1));
-            svg.appendChild(head(mid.x, mid.y, 1, 0, hair));
-
-            //Jev -> trunk -> the two answers
-            let out = centreOf(els.mid, base, "right");
-            let trunk2 = out.x + 24;
-            let ends = [els.flap, els.wait].map(made => centreOf(made.node, base, "left"));
-            svg.appendChild(path("M" + out.x + " " + out.y + " H" + trunk2, hair, 1));
-            svg.appendChild(path("M" + trunk2 + " " + Math.min(ends[0].y, out.y) + " V" + Math.max(ends[1].y, out.y), hair, 1));
-            [JevQuestions.FLAP, JevQuestions.WAIT].forEach((word, i) => {
-                let picked = chosen === word;
-                let ink = picked ? (word === JevQuestions.FLAP ? flapInk : waitInk) : hair;
-                svg.appendChild(path("M" + trunk2 + " " + ends[i].y + " H" + ends[i].x, ink, picked ? 2 : 1));
-                svg.appendChild(head(ends[i].x, ends[i].y, 1, 0, ink));
-            });
-        } else {
-            //stacked: inputs down to a bus, bus into Jev; Jev down to a bus, bus into each answer
-            let mid = centreOf(els.mid, base, "top");
-            let busY = mid.y - 13;
-            let downs = els.inputs.map(made => centreOf(made.node, base, "bottom"));
-            downs.forEach(pt => {
-                svg.appendChild(path("M" + pt.x + " " + pt.y + " V" + busY, hair, 1));
-            });
-            let xs = downs.map(pt => pt.x);
-            svg.appendChild(path("M" + Math.min.apply(null, xs.concat(mid.x)) + " " + busY + " H" + Math.max.apply(null, xs.concat(mid.x)), hair, 1));
-            svg.appendChild(path("M" + mid.x + " " + busY + " V" + mid.y, hair, 1));
-            svg.appendChild(head(mid.x, mid.y, 0, 1, hair));
-
-            let out = centreOf(els.mid, base, "bottom");
-            let bus2 = out.y + 13;
-            let tops = [els.flap, els.wait].map(made => centreOf(made.node, base, "top"));
-            svg.appendChild(path("M" + out.x + " " + out.y + " V" + bus2, hair, 1));
-            svg.appendChild(path("M" + tops[0].x + " " + bus2 + " H" + tops[1].x, hair, 1));
-            [JevQuestions.FLAP, JevQuestions.WAIT].forEach((word, i) => {
-                let picked = chosen === word;
-                let ink = picked ? (word === JevQuestions.FLAP ? flapInk : waitInk) : hair;
-                svg.appendChild(path("M" + tops[i].x + " " + bus2 + " V" + tops[i].y, ink, picked ? 2 : 1));
-                svg.appendChild(head(tops[i].x, tops[i].y, 0, 1, ink));
-            });
+        let node = canvasElement();
+        if (node != null && (width !== size.w || height !== size.h)) {
+            //noRedraw: we are inside the scene's start(), the world is half built
+            resizeCanvas(size.w, size.h, true);
         }
+        if (node != null && node.parentNode !== els.box) {
+            node.style.position = "static";
+            node.style.left = "";
+            node.style.top = "";
+            node.style.display = "block";
+            els.box.appendChild(node);
+        }
+
+        return size;
     }
     //#endregion
 
@@ -323,37 +320,71 @@ var JevPanel = (function () {
     var chartSeen = 0;
     var chartRun = -1;
 
-    function gatherChart(scene) {
-        if (scene.runId !== chartRun) {
-            chartRun = scene.runId;
-            chartConf.length = 0;
-            chartFlap.length = 0;
-            chartSeen = 0;
-        }
+    //the decisions of the last few seconds, for the tick strip
+    var ticks = [];
+
+    //what the counters stood at when this flight began; the stats are per session
+    var flightStartMs = 0;
+    var baseApplied = 0;
+    var baseTokens = 0;
+    var bestScore = 0;
+
+    function ink(name, fallback) {
+        let value = getComputedStyle(root).getPropertyValue(name).trim();
+        return value !== "" ? value : fallback;
+    }
+
+    function newFlight(scene) {
+        chartRun = scene.runId;
+        chartConf.length = 0;
+        chartFlap.length = 0;
+        ticks.length = 0;
+        chartSeen = scene.traceCount != null ? scene.traceCount : 0;
+        flightStartMs = now();
+        let stats = scene.client != null ? scene.client.stats : null;
+        baseApplied = stats != null ? stats.applied : 0;
+        baseTokens = stats != null ? stats.inputTokens : 0;
+    }
+
+    function gather(scene) {
+        if (scene.runId !== chartRun) newFlight(scene);
+
         let records = scene.trace;
         if (records == null) return;
+
         let total = scene.traceCount != null ? scene.traceCount : records.length;
         //the trace keeps the last JEV_TRACE_MAX records; walk only the ones we have not seen
         let start = Math.max(0, records.length - (total - chartSeen));
+        let at = now();
+
         for (let i = start; i < records.length; i++) {
             let r = records[i];
-            if (r.t === "apply" && typeof r.confidence === "number") {
-                chartConf.push(r.confidence);
-                chartFlap.push(r.choice === JevQuestions.FLAP);
-                if (chartConf.length > JEV_PANEL_CHART_MAX) {
-                    chartConf.shift();
-                    chartFlap.shift();
+
+            if (r.t === "apply") {
+                ticks.push({ at: at, kind: r.choice === JevQuestions.FLAP ? "flap" : "wait" });
+                if (typeof r.confidence === "number") {
+                    chartConf.push(r.confidence);
+                    chartFlap.push(r.choice === JevQuestions.FLAP);
+                    if (chartConf.length > JEV_PANEL_CHART_MAX) {
+                        chartConf.shift();
+                        chartFlap.shift();
+                    }
                 }
+            } else if (r.t === "stale" || r.t === "superseded") {
+                ticks.push({ at: at, kind: "dropped" });
             }
         }
         chartSeen = total;
+
+        let cut = at - JEV_DASH_TICK_SECONDS * 1000;
+        while (ticks.length > 0 && ticks[0].at < cut) ticks.shift();
     }
 
-    function drawChart(scene) {
-        let canvas = els.chart;
+    //a canvas that follows its css size, whatever the display's pixel ratio is
+    function fitCanvas(canvas) {
         let cssW = canvas.clientWidth;
         let cssH = canvas.clientHeight;
-        if (cssW === 0 || cssH === 0) return;
+        if (cssW === 0 || cssH === 0) return null;
 
         let dpr = window.devicePixelRatio || 1;
         let w = Math.round(cssW * dpr);
@@ -366,27 +397,32 @@ var JevPanel = (function () {
         let ctx = canvas.getContext("2d");
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.clearRect(0, 0, cssW, cssH);
+        return { ctx: ctx, w: cssW, h: cssH };
+    }
 
+    function drawChart() {
+        let fit = fitCanvas(els.chart);
+        if (fit == null) return;
+
+        let ctx = fit.ctx;
         let pad = 6;
         let n = chartConf.length;
 
         //the half line, so 0.5 has a place on the chart
-        ctx.strokeStyle = "rgba(230, 233, 242, 0.12)";
+        ctx.strokeStyle = ink("--line", "#1f2a33");
         ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.moveTo(pad, cssH / 2);
-        ctx.lineTo(cssW - pad, cssH / 2);
+        ctx.moveTo(pad, fit.h / 2);
+        ctx.lineTo(fit.w - pad, fit.h / 2);
         ctx.stroke();
 
         if (n < 2) return;
 
-        let flapInk = getComputedStyle(root).getPropertyValue("--flap").trim() || "#e43f5a";
-        let waitInk = getComputedStyle(root).getPropertyValue("--wait").trim() || "#4f8a8b";
-        let stepX = (cssW - pad * 2) / (JEV_PANEL_CHART_MAX - 1);
-        let x0 = cssW - pad - stepX * (n - 1);
-        let yOf = c => pad + (1 - c) * (cssH - pad * 2);
+        let stepX = (fit.w - pad * 2) / (JEV_PANEL_CHART_MAX - 1);
+        let x0 = fit.w - pad - stepX * (n - 1);
+        let yOf = c => pad + (1 - c) * (fit.h - pad * 2);
 
-        ctx.strokeStyle = waitInk;
+        ctx.strokeStyle = ink("--teal", "#3ddc97");
         ctx.lineWidth = 1.5;
         ctx.beginPath();
         for (let i = 0; i < n; i++) {
@@ -397,12 +433,48 @@ var JevPanel = (function () {
         }
         ctx.stroke();
 
-        ctx.fillStyle = flapInk;
+        ctx.fillStyle = ink("--flap", "#e43f5a");
         for (let i = 0; i < n; i++) {
             if (!chartFlap[i]) continue;
             ctx.beginPath();
             ctx.arc(x0 + stepX * i, yOf(chartConf[i]), 2.5, 0, Math.PI * 2);
             ctx.fill();
+        }
+    }
+
+    //the last few seconds of decisions, one tick each, oldest at the left
+    function drawTicks() {
+        let fit = fitCanvas(els.ticks);
+        if (fit == null) return;
+
+        let ctx = fit.ctx;
+        let y = Math.round(fit.h / 2);
+
+        ctx.strokeStyle = ink("--line", "#1f2a33");
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(0, y + 0.5);
+        ctx.lineTo(fit.w, y + 0.5);
+        ctx.stroke();
+
+        let span = JEV_DASH_TICK_SECONDS * 1000;
+        let at = now();
+        let colors = {
+            flap: ink("--flap", "#e43f5a"),
+            wait: ink("--teal", "#3ddc97"),
+            dropped: ink("--line", "#1f2a33")
+        };
+
+        for (let i = 0; i < ticks.length; i++) {
+            let age = at - ticks[i].at;
+            let x = Math.round(fit.w * (1 - age / span));
+            if (x < 0 || x > fit.w) continue;
+            ctx.strokeStyle = colors[ticks[i].kind];
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(x + 0.5, 0);
+            ctx.lineTo(x + 0.5, fit.h);
+            ctx.stroke();
         }
     }
     //#endregion
@@ -417,7 +489,17 @@ var JevPanel = (function () {
         return answer.choice === option ? answer.confidence : 1 - answer.confidence;
     }
 
-    function inputValue(fields, i) {
+    function clamp01(n) {
+        return n < 0 ? 0 : (n > 1 ? 1 : n);
+    }
+
+    function pad3(n) {
+        let text = String(Math.max(0, Math.round(n)));
+        while (text.length < 3) text = "0" + text;
+        return text;
+    }
+
+    function seenValue(fields, i) {
         if (fields == null) return "–";
         if (i === 0) return fields.position;
         if (i === 1) return fields.motion;
@@ -426,73 +508,155 @@ var JevPanel = (function () {
         return fields.distance + " px";
     }
 
-    function writeOutput(parts, applied, option) {
+    function writeProb(parts, applied, option) {
         let value = probabilityOf(applied, option);
         setText(parts.value, typeof value === "number" ? value.toFixed(2) : "–");
-        setClass(parts.node, "jp-chosen", applied != null && applied.choice === option);
+        parts.fill.style.width = (typeof value === "number" ? clamp01(value) * 100 : 0) + "%";
+        setClass(parts.node, "jd-chosen", applied != null && applied.choice === option);
     }
 
-    function writeTag(key, strong, label) {
-        setText(els.tags[key].strong, strong);
-        setText(els.tags[key].label, label);
+    function writeGauge(parts, value, max, text) {
+        parts.fill.style.width = (typeof value === "number" ? clamp01(value / max) * 100 : 0) + "%";
+        setText(parts.value, text);
     }
 
-    function writeTags(scene) {
+    //decisions a second, off the tick strip, so it is a rate and not an average
+    function decisionRate() {
+        let applied = 0;
+        for (let i = 0; i < ticks.length; i++) {
+            if (ticks[i].kind !== "dropped") applied++;
+        }
+        return applied / JEV_DASH_TICK_SECONDS;
+    }
+
+    function writeSlow(scene) {
         let stats = scene.client != null ? scene.client.stats : null;
-        let frameMs = scene.frameMs || JEV_FRAME_MS;
-        let seconds = Math.max(1, scene.frame * frameMs / 1000);
+        let seconds = Math.max(0.001, (now() - flightStartMs) / 1000);
 
-        writeTag("answer", stats != null && stats.lastLatencyMs ? (stats.lastLatencyMs / 1000).toFixed(2) + " s" : "–", " to answer");
-        writeTag("rate", stats != null ? (stats.applied / seconds).toFixed(1) : "–", " decisions a second");
+        setText(els.flight, "FLIGHT " + pad3(scene.runId).slice(1));
 
-        let tokensPerMinute = stats != null ? Math.round(stats.inputTokens / seconds * 60) : null;
-        writeTag("tokens", tokensPerMinute != null ? tokensPerMinute.toLocaleString() : "–", " tokens a minute");
-        writeTag("cost", tokensPerMinute != null ? "$" + (tokensPerMinute * 60 * JEV_PANEL_COST_PER_M / 1e6).toFixed(2) : "–", " an hour");
+        //the three big numbers of this flight
+        let score = scene.bird != null ? scene.bird.score : 0;
+        if (score > bestScore) bestScore = score;
+        setText(els.score.value, pad3(score));
+        setText(els.best.value, pad3(bestScore));
 
-        let lead = scene.lastSent != null ? scene.lastSent.leadFrames * frameMs / 1000 : null;
-        writeTag("lead", lead != null ? lead.toFixed(2) + " s" : "–", " ahead");
+        let applied = stats != null ? stats.applied - baseApplied : 0;
+        setText(els.decisions.value, pad3(applied));
+
+        setText(els.rate, decisionRate().toFixed(1) + " /s");
+
+        setText(els.tel.INFERENCE.value, stats != null && stats.lastUpstreamMs != null ? Math.round(stats.lastUpstreamMs) + " ms" : "–");
+        setText(els.tel.NETWORK.value, stats != null && stats.lastLatencyMs ? Math.round(stats.lastLatencyMs) + " ms" : "–");
+        setText(els.tel.DECISIONS.value, decisionRate().toFixed(1) + " /s");
+
+        let tokens = stats != null ? Math.max(0, stats.inputTokens - baseTokens) : 0;
+        setText(els.tel["INPUT TOKENS"].value, tokens.toLocaleString());
+
+        let perHour = tokens / seconds * 3600 * JEV_PANEL_COST_PER_M / 1e6;
+        setText(els.tel.COST.value, "$" + perHour.toFixed(2) + " /h");
+        setText(els.tel.ENGINE.value, "jev-latest · api.typesafe.ai");
+
+        setText(els.live, "LIVE RUN · " + (JEV_TIME_SCALE === 1 ? "1×" : "1/" + JEV_TIME_SCALE + "×"));
+
+        let elapsed = Math.floor(seconds);
+        setText(els.clock, pad3(Math.floor(elapsed / 60)).slice(1) + ":" + pad3(elapsed % 60).slice(1));
     }
 
     function writeValues(scene) {
         let fields = scene.lastSent != null ? scene.lastSent.fields : null;
-        for (let i = 0; i < els.inputs.length; i++) {
-            setText(els.inputs[i].value, String(inputValue(fields, i)));
+        for (let i = 0; i < els.seen.length; i++) {
+            setText(els.seen[i].value, String(seenValue(fields, i)));
         }
 
+        let frameMs = scene.frameMs || JEV_FRAME_MS;
+        let lead = scene.lastSent != null ? scene.lastSent.leadFrames * frameMs / 1000 : null;
+        setText(els.aheadValue, lead != null ? lead.toFixed(2) + " S AHEAD" : "–");
+
         let applied = scene.lastApplied;
-        writeOutput(els.flap, applied, JevQuestions.FLAP);
-        writeOutput(els.wait, applied, JevQuestions.WAIT);
-        drawWires(applied != null ? applied.choice : null);
+        writeProb(els.flap, applied, JevQuestions.FLAP);
+        writeProb(els.wait, applied, JevQuestions.WAIT);
 
-        gatherChart(scene);
-        drawChart(scene);
+        let waiting = scene.waitingForPilot || applied == null || applied.choice == null;
+        setText(els.executing, waiting ? "WAITING FOR PILOT" : applied.choice);
+        setClass(els.executing, "jd-flap", !waiting && applied.choice === JevQuestions.FLAP);
 
-        //the tags move slowly; every 12th frame is plenty
-        if (frames % 12 === 0) writeTags(scene);
+        let confidence = applied != null ? probabilityOf(applied, applied.choice) : null;
+        writeGauge(els.confidence, confidence, 1, typeof confidence === "number" ? confidence.toFixed(2) : "–");
+
+        let stats = scene.client != null ? scene.client.stats : null;
+        let answerMs = stats != null ? stats.lastLatencyMs : 0;
+        writeGauge(els.answerTime, answerMs ? answerMs / 1000 : null, 1, answerMs ? (answerMs / 1000).toFixed(2) + " s" : "–");
+
+        gather(scene);
+        drawChart();
+        drawTicks();
+
+        //the slow numbers move in words, not in frames; every 12th frame is plenty
+        if (frames % 12 === 0) writeSlow(scene);
     }
     //#endregion
 
     //#region the scene's calls
     function mount(scene) {
         if (root != null) return;
-        open = true;
+
+        host = scene;
+
+        let node = canvasElement();
+        if (node != null) {
+            //exactly as sketch.js left it, so play, train and watch get it back
+            saved = {
+                w: width,
+                h: height,
+                parent: node.parentNode,
+                position: node.style.position,
+                left: node.style.left,
+                top: node.style.top,
+                display: node.style.display
+            };
+        }
 
         build();
         document.body.appendChild(root);
+        document.body.classList.add("jev-body");
 
-        onResize = () => applyLayout();
+        chartRun = -1;
+
+        onResize = () => {
+            let before = width + "x" + height;
+            let size = layoutGame();
+            //a real change leaves the pipes laid out for the old size, so the flight starts again
+            if (size == null || before === size.w + "x" + size.h) return;
+            if (host != null && host.gameStarted) host.start();
+        };
         window.addEventListener("resize", onResize);
 
-        applyOpen();
+        layoutGame();
     }
 
     function unmount() {
         if (root == null) return;
+
         window.removeEventListener("resize", onResize);
         onResize = null;
+
+        let node = canvasElement();
+        if (node != null && saved != null) {
+            resizeCanvas(saved.w, saved.h, true);
+            saved.parent.appendChild(node);
+            node.style.position = saved.position;
+            node.style.left = saved.left;
+            node.style.top = saved.top;
+            node.style.display = saved.display;
+        }
+        saved = null;
+
+        document.body.classList.remove("jev-body");
         root.remove();
         root = null;
         els = {};
+        host = null;
         chartRun = -1;
     }
 
@@ -500,17 +664,24 @@ var JevPanel = (function () {
     function update(scene) {
         if (root == null) return;
         frames++;
-        if (!open) return;
         writeValues(scene);
     }
 
-    //a tap that landed on the panel is not a tap on the game
+    //the way out of the scene lives in the header, never over the flight
+    function placeBack(node) {
+        if (root == null || node == null) return;
+        node.classList.add("jd-back");
+        els.back.appendChild(node);
+    }
+
+    //a tap that landed on the dashboard is not a tap on the game
     function tookTap() {
         return now() - tapAt < JEV_PANEL_TAP_MS;
     }
 
+    //the canvas is the sensory layer only: the dashboard says everything else
     function isOpen() {
-        return root != null && open;
+        return root != null;
     }
     //#endregion
 
@@ -518,6 +689,7 @@ var JevPanel = (function () {
         mount: mount,
         unmount: unmount,
         update: update,
+        placeBack: placeBack,
         tookTap: tookTap,
         isOpen: isOpen
     };

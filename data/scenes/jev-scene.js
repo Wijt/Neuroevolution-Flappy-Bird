@@ -55,10 +55,14 @@ const JEV_TRACE_MAX = 2000;
 //how many frames one M press is allowed to burn before it gives up
 const JEV_STEP_BUDGET = 600;
 
-//P N M, read off keyCode so no other scene ever sees them
+//SPACE P N M, read off keyCode so no other scene ever sees them
+const JEV_KEY_SPACE = 32;
 const JEV_KEY_PAUSE = 80;
 const JEV_KEY_STEP = 78;
 const JEV_KEY_NEXT_EVENT = 77;
+
+//R starts the next flight, whether or not this one ended
+const JEV_KEY_RESET = 82;
 
 //V shows or hides the canvas overlay, D writes the trace out
 const JEV_KEY_OVERLAY = 86;
@@ -141,13 +145,13 @@ class JevScene extends Scene {
     setupUI() {
         if (this.returnToMenuButton != null) return;
 
+        //the dashboard owns the layout, so it goes up first and the canvas moves into it
+        JevPanel.mount(this);
+
         this.returnToMenuButton = createButton('<');
         this.returnToMenuButton.addClass("return-to-menu-button");
-        let bottomLeftCorner = createVector();
-        this.returnToMenuButton.size(30, 30);
-        bottomLeftCorner.x = innerWidth/2 - width/2 + 10;
-        bottomLeftCorner.y = innerHeight - (innerHeight - height)/2 - 40;
-        this.returnToMenuButton.position(bottomLeftCorner.x, bottomLeftCorner.y);
+        //the way out lives in the dashboard header, never over the flight
+        JevPanel.placeBack(this.returnToMenuButton.elt);
         this.returnToMenuButton.mouseClicked(() => {
             this.sceneManager.openScene(MENU_SCENE);
             //exit() already cleared it, so only remove it if it is still around
@@ -156,9 +160,6 @@ class JevScene extends Scene {
                 this.returnToMenuButton = null;
             }
         });
-
-        //the telemetry lives in the DOM now, the canvas only draws what Jev was told
-        JevPanel.mount(this);
     }
 
     start() {
@@ -811,8 +812,12 @@ class JevScene extends Scene {
             this.downloadTrace();
             return;
         }
-        if (keyCode === JEV_KEY_PAUSE) {
+        if (keyCode === JEV_KEY_PAUSE || keyCode === JEV_KEY_SPACE) {
             this.togglePause();
+            return;
+        }
+        if (keyCode === JEV_KEY_RESET) {
+            this.start();
             return;
         }
         if (this.paused && keyCode === JEV_KEY_STEP) {
@@ -825,8 +830,8 @@ class JevScene extends Scene {
         }
 
         if (this.bird == null || this.bird.live) return;
-        //space or enter, same as a click
-        if (keyCode === 32 || keyCode === 13) this.start();
+        //enter, same as a click on a dead bird; space is the pause now
+        if (keyCode === 13) this.start();
     }
 
     exit() {
