@@ -685,6 +685,8 @@ class JevScene extends Scene {
     //#region trace
     writeTrace(record) {
         this.trace.push(record);
+        //how many records were ever written, so a reader can tell new from seen after a shift
+        this.traceCount = (this.traceCount || 0) + 1;
         if (this.trace.length > JEV_TRACE_MAX) this.trace.shift();
     }
 

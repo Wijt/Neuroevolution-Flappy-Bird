@@ -158,7 +158,8 @@ var JevHud = (function () {
             pop();
         }
 
-        drawDecision(scene, fields, ghostY, small);
+        //the panel says the same thing bigger; when it is open the canvas keeps just the ghost
+        if (typeof JevPanel === "undefined" || !JevPanel.isOpen()) drawDecision(scene, fields, ghostY, small);
     }
 
     // The answer, in one stacked block beside the ghost: the word it chose, a bar for
