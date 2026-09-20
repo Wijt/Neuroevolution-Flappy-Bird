@@ -398,18 +398,45 @@ body {
 }
 
 /* ---- narrow windows stack the columns; nothing is fixed any more ---- */
+/* on a phone the dashboard is one scrolling page: the header sticks to the top,
+   the flight, the numbers and the pilot follow in order, the footer comes last */
 .jev-dash.jd-stacked {
-    padding: 0 16px;
+    display: block;
+    padding: 0 16px 16px;
     overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.jd-stacked .jd-head {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    height: 56px;
+    background: var(--page);
 }
 
 .jd-stacked .jd-main {
+    display: flex;
     flex-direction: column;
     gap: 24px;
+    min-height: 0;
 }
 
 .jd-stacked .jd-left { width: auto; }
-.jd-stacked .jd-right { overflow: visible; }
+
+.jd-stacked .jd-right {
+    flex: none;
+    max-width: none;
+    overflow: visible;
+}
+
+.jd-stacked .jd-foot {
+    height: 40px;
+    justify-content: flex-end;
+}
+
+/* no keyboard on a phone, so no key legend */
+.jd-stacked .jd-foot > .jd-cap:first-child { display: none; }
 .jd-stacked .jd-stats { gap: 20px; }
 .jd-stacked .jd-digits { font-size: 26px; }
 .jd-stacked .jd-telemetry { margin-top: 14px; }
