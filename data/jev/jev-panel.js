@@ -1,39 +1,40 @@
-// The side panel that shows what Jev is thinking.
+// The side panel that shows what Jev is thinking, as a dashboard.
 // Plain DOM on purpose: p5 0.10.2's createDiv() is clumsy for something this nested,
 // and the panel must never touch the canvas.
 //
-// It shows three things and no more: the snapshot of the last request (the world as
-// it will be, not as it is), the candidate the loop last spent, and the bookkeeping
-// that says whether the timing is working.
+// It answers four questions in order: is the loop healthy (the badges), what did we
+// describe to Jev (the schematic), what came back and what did we spend it on (the
+// flow), and how the requests actually overlapped in time (the pipeline). The raw
+// trace is still there, folded away, because that is the thing you read when something
+// looks wrong.
+//
+// The scene hands us one view per draw frame and nothing else, so everything the
+// dashboard needs that the view does not carry is derived from view.trace here.
 const JEV_DECISION_OPTIONS = [
     "FLAP",
     "WAIT"
 ];
 
-const JEV_SCENE_ROWS = [
-    { key: "position", label: "position" },
-    { key: "motion", label: "motion" },
-    { key: "above", label: "above" },
-    { key: "below", label: "below" },
-    { key: "distance", label: "pipe ahead" }
-];
-
-const JEV_META_ROWS = [
-    { key: "inFlight", label: "in flight" },
-    { key: "held", label: "held" },
-    { key: "sent", label: "sent" },
-    { key: "applied", label: "applied" },
-    { key: "superseded", label: "superseded" },
-    { key: "stale", label: "stale" },
-    { key: "lead", label: "lead" },
-    { key: "latency", label: "last latency" },
-    { key: "tokens", label: "tokens" },
-    { key: "errors", label: "errors" },
-    { key: "speed", label: "speed" }
-];
-
 //how many trace lines the panel keeps on screen, the log itself is much longer
 const JEV_TRACE_SHOWN = 12;
+
+//the pipeline and the rates look at the last 5 seconds of game frames
+const JEV_WINDOW_FRAMES = 300;
+const JEV_FPS = 60;
+
+//what an input token costs, in dollars per million
+const JEV_INPUT_COST = 0.042;
+
+//canvas heights in css px, the widths follow the panel
+const JEV_H_SNAPSHOT = 190;
+const JEV_H_FLOW = 120;
+const JEV_H_TIMELINE = 70;
+
+//the text badges only need to be readable, not smooth; ~10 Hz is plenty
+const JEV_BADGE_EVERY = 6;
+
+//how long the action edge stays lit after an applied FLAP, and the Jev node after a recv
+const JEV_PULSE_MS = 320;
 
 //the timeline says "lower half", the snapshot says "inside the gap, lower half"
 const JEV_POSITION_SHORT = {
@@ -42,6 +43,21 @@ const JEV_POSITION_SHORT = {
     "inside the gap, upper half": "upper half",
     "inside the gap, lower half": "lower half"
 };
+
+const JEV_BADGES = [
+    { key: "latency", label: "latency" },
+    { key: "lead", label: "lead" },
+    { key: "rps", label: "req/s" },
+    { key: "tpm", label: "tok/min" },
+    { key: "cost", label: "$/h" },
+    { key: "speed", label: "speed" }
+];
+
+const JEV_COUNTERS = [
+    { key: "applied", label: "applied" },
+    { key: "superseded", label: "superseded" },
+    { key: "stale", label: "stale" }
+];
 
 //#region trace formatting
 // Same shapes the harness prints, so a browser trace and a headless one line up.
@@ -130,6 +146,11 @@ function jevTraceLines(record) {
 }
 //#endregion
 
+//one clock for the animations, same fallback the scene uses
+function jevPanelNow() {
+    return (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+}
+
 class JevPanel {
     constructor(getRect, getTraceFile) {
         this.getRect = getRect;
@@ -137,9 +158,38 @@ class JevPanel {
         this.destroyed = false;
         this.cache = {};
 
-        this.fieldNodes = {};
-        this.decisionNodes = {};
-        this.metaNodes = {};
+        this.badgeNodes = {};
+        this.counterNodes = {};
+
+        //#region the model the canvases read, all of it derived from the trace
+        //one entry per request, in send order; the pipeline and the packets share it
+        this.requests = [];
+        this.byId = {};
+        this.flaps = [];
+        this.deaths = [];
+
+        //the scene's frame counter, followed rather than read: it is not in the view
+        this.nowFrame = 0;
+
+        //an EMA of the measured round trip, it is what a packet's position is scaled by
+        this.latencyMs = 400;
+
+        this.lastRecv = null;
+        this.sparkAt = -1e9;
+        this.pulseAt = -1e9;
+
+        //two samples of the token counter are enough for a rate
+        this.tokenNow = { frame: 0, tokens: 0 };
+        this.tokenThen = null;
+
+        //reused so a frame of animation allocates nothing
+        this.packets = [];
+        this.bars = { FLAP: null, WAIT: null };
+        this.flowModel = { w: 0, h: 0, packets: this.packets, bars: this.bars, choice: null, pulse: 0, spark: 0 };
+        this.timelineModel = { w: 0, h: 0, window: JEV_WINDOW_FRAMES, requests: this.requests, flaps: this.flaps, deaths: this.deaths };
+        //#endregion
+
+        this.frames = 0;
 
         this.build();
 
@@ -152,6 +202,7 @@ class JevPanel {
         this.layout(this.getRect ? this.getRect() : null);
     }
 
+    //#region building
     build() {
         this.root = document.createElement("div");
         this.root.className = "jev-panel";
@@ -179,133 +230,174 @@ class JevPanel {
 
         header.appendChild(state);
 
+        //the whole panel folds away on a narrow screen, the header is the handle
         header.addEventListener("click", () => {
             this.root.classList.toggle("is-open");
         });
         this.root.appendChild(header);
         //#endregion
 
-        //#region scene fields
-        this.root.appendChild(this.makeTitle("scene"));
+        //#region badges
+        let badges = document.createElement("div");
+        badges.className = "jev-badges jev-section";
 
-        let sceneBox = document.createElement("div");
+        JEV_BADGES.forEach(badge => {
+            let box = document.createElement("span");
+            box.className = "jev-badge";
 
-        //the numbers are the predicted world, saying so avoids a lot of confusion
+            let name = document.createElement("span");
+            name.className = "jev-badge-name";
+            name.textContent = badge.label;
+
+            let value = document.createElement("span");
+            value.className = "jev-badge-value";
+            value.textContent = "-";
+
+            box.appendChild(name);
+            box.appendChild(value);
+            badges.appendChild(box);
+
+            this.badgeNodes[badge.key] = value;
+        });
+
+        this.root.appendChild(badges);
+        //#endregion
+
+        //#region what jev sees
+        this.root.appendChild(this.makeTitle("what jev sees"));
+
+        let seen = document.createElement("div");
+        this.snapshotCanvas = this.makeCanvas(JEV_H_SNAPSHOT);
+        seen.appendChild(this.snapshotCanvas.el);
+
+        this.positionWord = document.createElement("div");
+        this.positionWord.className = "jev-word";
+        this.positionWord.textContent = "-";
+        seen.appendChild(this.positionWord);
+
+        this.motionWord = document.createElement("div");
+        this.motionWord.className = "jev-word jev-word-soft";
+        this.motionWord.textContent = "-";
+        seen.appendChild(this.motionWord);
+
         this.describedLabel = document.createElement("div");
         this.describedLabel.className = "jev-dim";
-        this.describedLabel.textContent = "described (at +0f)";
-        sceneBox.appendChild(this.describedLabel);
+        this.describedLabel.textContent = "described at +0f";
+        seen.appendChild(this.describedLabel);
 
-        let list = document.createElement("dl");
-        list.className = "jev-dl";
-        JEV_SCENE_ROWS.forEach(row => {
-            let term = document.createElement("dt");
-            term.textContent = row.label;
-            let value = document.createElement("dd");
+        this.root.appendChild(this.wrap(seen));
+        //#endregion
+
+        //#region decision flow
+        this.root.appendChild(this.makeTitle("decision flow"));
+
+        let flow = document.createElement("div");
+        this.flowCanvas = this.makeCanvas(JEV_H_FLOW);
+        flow.appendChild(this.flowCanvas.el);
+
+        this.decisionWord = document.createElement("div");
+        this.decisionWord.className = "jev-word";
+        this.decisionWord.textContent = "-";
+        flow.appendChild(this.decisionWord);
+
+        let counters = document.createElement("div");
+        counters.className = "jev-counters";
+
+        JEV_COUNTERS.forEach(counter => {
+            let box = document.createElement("span");
+            box.className = "jev-counter is-" + counter.key;
+
+            let value = document.createElement("span");
+            value.className = "jev-counter-value";
             value.textContent = "-";
-            list.appendChild(term);
-            list.appendChild(value);
-            this.fieldNodes[row.key] = value;
+
+            let name = document.createElement("span");
+            name.className = "jev-counter-name";
+            name.textContent = counter.label;
+
+            box.appendChild(value);
+            box.appendChild(name);
+            counters.appendChild(box);
+
+            this.counterNodes[counter.key] = value;
         });
-        sceneBox.appendChild(list);
 
-        this.root.appendChild(this.wrap(sceneBox));
+        flow.appendChild(counters);
+        this.root.appendChild(this.wrap(flow));
         //#endregion
 
-        //#region decision
-        this.root.appendChild(this.makeTitle("decision"));
+        //#region pipeline
+        this.root.appendChild(this.makeTitle("pipeline"));
 
-        let decisionBox = document.createElement("div");
-        decisionBox.appendChild(this.makeOptionList(JEV_DECISION_OPTIONS, this.decisionNodes));
+        let pipeline = document.createElement("div");
+        this.timelineCanvas = this.makeCanvas(JEV_H_TIMELINE);
+        pipeline.appendChild(this.timelineCanvas.el);
 
-        this.confidenceLabel = document.createElement("div");
-        this.confidenceLabel.className = "jev-val";
-        this.confidenceLabel.textContent = "confidence -";
-        decisionBox.appendChild(this.confidenceLabel);
+        this.inFlightLabel = document.createElement("div");
+        this.inFlightLabel.className = "jev-dim";
+        this.inFlightLabel.textContent = "in flight -";
+        pipeline.appendChild(this.inFlightLabel);
 
-        this.appliedLabel = document.createElement("div");
-        this.appliedLabel.className = "jev-dim";
-        this.appliedLabel.textContent = "last applied: none";
-        decisionBox.appendChild(this.appliedLabel);
-
-        this.root.appendChild(this.wrap(decisionBox));
+        this.root.appendChild(this.wrap(pipeline));
         //#endregion
 
-        //#region meta
-        this.root.appendChild(this.makeTitle("meta"));
-        let meta = document.createElement("dl");
-        meta.className = "jev-dl";
-        JEV_META_ROWS.forEach(row => {
-            let term = document.createElement("dt");
-            term.textContent = row.label;
-            let value = document.createElement("dd");
-            value.textContent = "-";
-            meta.appendChild(term);
-            meta.appendChild(value);
-            this.metaNodes[row.key] = value;
+        //#region trace, folded away
+        let fold = document.createElement("div");
+        fold.className = "jev-fold jev-section";
+        this.traceFold = fold;
+
+        let foldHead = document.createElement("div");
+        foldHead.className = "jev-fold-head";
+
+        let caret = document.createElement("span");
+        caret.className = "jev-caret";
+        caret.textContent = "▶";
+        foldHead.appendChild(caret);
+
+        let foldName = document.createElement("span");
+        foldName.textContent = "trace";
+        foldHead.appendChild(foldName);
+
+        foldHead.addEventListener("click", () => {
+            fold.classList.toggle("is-open");
+            //the log is only written while it is on screen, so catch it up now
+            this.cache.traceSeq = null;
         });
-        this.root.appendChild(this.wrap(meta));
-        //#endregion
+        fold.appendChild(foldHead);
 
-        //#region trace
-        this.root.appendChild(this.makeTitle("trace"));
-
-        let traceBox = document.createElement("div");
+        let body = document.createElement("div");
+        body.className = "jev-fold-body";
 
         let legend = document.createElement("div");
         legend.className = "jev-legend";
         legend.textContent = "P pause  N step  M next event";
-        traceBox.appendChild(legend);
+        body.appendChild(legend);
 
         this.traceLog = document.createElement("div");
         this.traceLog.className = "jev-trace";
-        traceBox.appendChild(this.traceLog);
+        body.appendChild(this.traceLog);
 
         this.downloadButton = document.createElement("button");
         this.downloadButton.className = "jev-download";
         this.downloadButton.type = "button";
         this.downloadButton.textContent = "download trace";
         this.downloadButton.addEventListener("click", () => this.downloadTrace());
-        traceBox.appendChild(this.downloadButton);
+        body.appendChild(this.downloadButton);
 
-        this.root.appendChild(this.wrap(traceBox));
+        fold.appendChild(body);
+        this.root.appendChild(fold);
         //#endregion
 
         document.body.appendChild(this.root);
     }
 
-    // one fixed-order list of options with a mini bar and a probability each
-    makeOptionList(options, nodes) {
-        let list = document.createElement("div");
-        list.className = "jev-read";
+    //a canvas that keeps its css height and takes its width from the panel
+    makeCanvas(cssHeight) {
+        let el = document.createElement("canvas");
+        el.className = "jev-canvas";
+        el.style.height = cssHeight + "px";
 
-        options.forEach(option => {
-            let row = document.createElement("div");
-            row.className = "jev-read-row";
-
-            let name = document.createElement("span");
-            name.className = "jev-read-name";
-            name.textContent = option;
-
-            let mini = document.createElement("span");
-            mini.className = "jev-mini";
-            let miniFill = document.createElement("span");
-            miniFill.className = "jev-mini-fill";
-            mini.appendChild(miniFill);
-
-            let prob = document.createElement("span");
-            prob.className = "jev-read-p";
-            prob.textContent = "-";
-
-            row.appendChild(name);
-            row.appendChild(mini);
-            row.appendChild(prob);
-            list.appendChild(row);
-
-            nodes[option] = { row: row, fill: miniFill, prob: prob };
-        });
-
-        return list;
+        return { el: el, ctx: el.getContext("2d"), w: 0, h: cssHeight, dpr: 0 };
     }
 
     makeTitle(text) {
@@ -321,6 +413,7 @@ class JevPanel {
         box.appendChild(child);
         return box;
     }
+    //#endregion
 
     // rect is the canvas' bounding rect; on narrow screens the css docks the panel
     // to the bottom instead, so no inline styles may be left behind.
@@ -339,52 +432,288 @@ class JevPanel {
         this.root.style.height = rect.height + "px";
     }
 
+    //#region writing to the dom, only when something changed
     setText(key, node, value) {
         if (this.cache[key] === value) return;
         this.cache[key] = value;
         node.textContent = value;
     }
+    //#endregion
 
-    setWidth(key, node, value) {
-        if (this.cache[key] === value) return;
-        this.cache[key] = value;
-        node.style.width = value;
+    //#region reading the trace
+    // The log only ever grows and its sequence number counts every record ever written,
+    // so the difference tells us exactly how many entries at the tail are new. Reading it
+    // that way survives the log dropping its oldest lines.
+    ingest(trace) {
+        if (trace == null) return;
+
+        let entries = trace.entries || [];
+
+        if (this.cache.ingestSeq == null) {
+            //first look: take the tail so the pipeline has something to show
+            this.cache.ingestSeq = Math.max(0, trace.seq - entries.length);
+        }
+
+        let fresh = Math.min(trace.seq - this.cache.ingestSeq, entries.length);
+        if (fresh <= 0) return;
+
+        this.cache.ingestSeq = trace.seq;
+
+        for (let i = entries.length - fresh; i < entries.length; i++) {
+            this.ingestRecord(entries[i]);
+        }
     }
 
-    setChoice(key, node, isChoice) {
-        if (this.cache[key] === isChoice) return;
-        this.cache[key] = isChoice;
-        if (isChoice) node.classList.add("is-choice");
-        else node.classList.remove("is-choice");
-    }
+    ingestRecord(record) {
+        if (record == null) return;
 
-    // answer is a choice answer: { choice, probabilities }
-    updateOptionList(prefix, options, nodes, answer) {
-        let probabilities = (answer != null && answer.probabilities != null) ? answer.probabilities : null;
+        if (typeof record.frame === "number" && record.frame > this.nowFrame) {
+            this.nowFrame = record.frame;
+        }
 
-        options.forEach(option => {
-            let node = nodes[option];
-            let p = (probabilities != null && typeof probabilities[option] === "number") ? probabilities[option] : null;
-            if (p == null) {
-                this.setWidth(prefix + ":" + option + ":w", node.fill, "0%");
-                this.setText(prefix + ":" + option + ":p", node.prob, "-");
-            } else {
-                this.setWidth(prefix + ":" + option + ":w", node.fill, Math.round(p * 100) + "%");
-                this.setText(prefix + ":" + option + ":p", node.prob, p.toFixed(2));
+        //a new run starts the frame counter over, so everything on screen goes with it
+        if (record.t === "header") {
+            this.resetRun();
+            return;
+        }
+
+        if (record.t === "send") {
+            let request = {
+                reqId: record.reqId,
+                sendFrame: record.frame,
+                recvFrame: null,
+                outcome: null,
+                sentAt: jevPanelNow()
+            };
+            this.requests.push(request);
+            this.byId[record.reqId] = request;
+            this.prune();
+            return;
+        }
+
+        if (record.t === "recv") {
+            this.latencyMs = this.latencyMs + 0.3 * (record.latencyMs - this.latencyMs);
+            this.sparkAt = jevPanelNow();
+            this.lastRecv = record;
+
+            let request = this.byId[record.reqId];
+            if (request != null) {
+                request.recvFrame = record.frame;
+                if (record.outcome === "discarded") request.outcome = "stale";
             }
-            this.setChoice(prefix + ":" + option + ":c", node.row, answer != null && answer.choice === option);
+            return;
+        }
+
+        if (record.t === "apply" || record.t === "superseded" || record.t === "stale") {
+            let request = this.byId[record.reqId];
+            if (request != null) request.outcome = (record.t === "apply") ? "applied" : record.t;
+            return;
+        }
+
+        if (record.t === "flap") {
+            this.flaps.push(record.frame);
+            if (this.flaps.length > 200) this.flaps.shift();
+            //an applied FLAP is the only thing that reaches the game
+            this.pulseAt = jevPanelNow();
+            return;
+        }
+
+        if (record.t === "death") {
+            this.deaths.push(record.frame);
+            if (this.deaths.length > 8) this.deaths.shift();
+        }
+    }
+
+    resetRun() {
+        this.requests.length = 0;
+        this.flaps.length = 0;
+        this.deaths.length = 0;
+        this.byId = {};
+        this.nowFrame = 0;
+        this.tokenThen = null;
+        this.tokenNow = { frame: 0, tokens: 0 };
+    }
+
+    //anything older than the window is off the screen and out of every rate
+    prune() {
+        let cut = this.nowFrame - JEV_WINDOW_FRAMES;
+        while (this.requests.length > 0) {
+            let first = this.requests[0];
+            if (first.sendFrame >= cut) break;
+            //something still in the air stays, however old it looks
+            if (first.recvFrame == null && first.sendFrame > cut - 300) break;
+            delete this.byId[first.reqId];
+            this.requests.shift();
+        }
+    }
+    //#endregion
+
+    //#region the numbers on the badges
+    sendsInWindow() {
+        let cut = this.nowFrame - JEV_WINDOW_FRAMES;
+        let n = 0;
+        for (let i = 0; i < this.requests.length; i++) {
+            if (this.requests[i].sendFrame >= cut) n++;
+        }
+        return n;
+    }
+
+    inFlightCount() {
+        let n = 0;
+        for (let i = 0; i < this.requests.length; i++) {
+            if (this.requests[i].recvFrame == null) n++;
+        }
+        return n;
+    }
+
+    // Tokens per minute off two samples of the session counter. The frames are the
+    // clock: 60 of them is a second, same as everywhere else in the panel.
+    tokensPerMinute(inputTokens) {
+        if (!isFinite(inputTokens)) return null;
+
+        if (inputTokens < this.tokenNow.tokens) this.tokenThen = null; //a fresh client
+        this.tokenNow.tokens = inputTokens;
+        this.tokenNow.frame = this.nowFrame;
+
+        if (this.tokenThen == null) {
+            this.tokenThen = { frame: this.nowFrame, tokens: inputTokens };
+            return null;
+        }
+
+        let frames = this.nowFrame - this.tokenThen.frame;
+        if (frames < 60) return null;
+
+        let rate = (inputTokens - this.tokenThen.tokens) / (frames / JEV_FPS) * 60;
+
+        //roll the older sample forward so the window stays 7.5-15 s
+        if (frames > 900) this.tokenThen = { frame: this.nowFrame, tokens: inputTokens };
+
+        return rate;
+    }
+
+    updateBadges(numbers) {
+        let latency = numbers.latencyMs;
+        this.setText("b:latency", this.badgeNodes.latency,
+            latency != null ? Math.round(latency) + " ms" : "-");
+
+        this.setText("b:lead", this.badgeNodes.lead,
+            numbers.leadMs != null ? numbers.leadMs + " ms / " + numbers.leadFrames + "f" : "-");
+
+        let rps = this.sendsInWindow() / (JEV_WINDOW_FRAMES / JEV_FPS);
+        this.setText("b:rps", this.badgeNodes.rps, rps.toFixed(1));
+
+        let tpm = this.tokensPerMinute(numbers.inputTokens);
+
+        this.setText("b:tpm", this.badgeNodes.tpm, tpm != null ? Math.round(tpm) + "" : "-");
+        this.setText("b:cost", this.badgeNodes.cost,
+            tpm != null ? "$" + (tpm * 60 * JEV_INPUT_COST / 1e6).toFixed(3) : "-");
+
+        this.setText("b:speed", this.badgeNodes.speed, numbers.timeScale != null ? "1/" + numbers.timeScale : "-");
+    }
+    //#endregion
+
+    //#region drawing
+    //nothing is drawn into a panel nobody can see
+    isVisible() {
+        if (this.destroyed) return false;
+        if (typeof document.visibilityState === "string" && document.visibilityState !== "visible") return false;
+        if (window.innerWidth <= 1000 && !this.root.classList.contains("is-open")) return false;
+        return true;
+    }
+
+    //the css owns the width, so the backing store follows it and the dpr
+    syncCanvas(canvas) {
+        let w = canvas.el.clientWidth | 0;
+        let dpr = window.devicePixelRatio || 1;
+        if (w <= 0) return false;
+
+        if (w !== canvas.w || dpr !== canvas.dpr) {
+            canvas.w = w;
+            canvas.dpr = dpr;
+            canvas.el.width = Math.round(w * dpr);
+            canvas.el.height = Math.round(canvas.h * dpr);
+            this.cache.snapshotKey = null; //the schematic has to be repainted at the new size
+        }
+
+        canvas.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        return true;
+    }
+
+    //the schematic only changes when a new snapshot went out, so it is keyed on the words
+    drawSnapshot(described) {
+        let canvas = this.snapshotCanvas;
+        if (!this.syncCanvas(canvas)) return;
+
+        let fields = described.fields;
+        let key = fields == null ? "none" :
+            fields.position + "|" + fields.motion + "|" + fields.above + "|" + fields.below + "|" + fields.distance;
+
+        if (this.cache.snapshotKey === key) return;
+        this.cache.snapshotKey = key;
+
+        JevDashboard.drawSnapshot(canvas.ctx, fields, { w: canvas.w, h: canvas.h });
+    }
+
+    drawFlow(decision) {
+        let canvas = this.flowCanvas;
+        if (!this.syncCanvas(canvas)) return;
+
+        let now = jevPanelNow();
+
+        //#region the packets in the air
+        this.packets.length = 0;
+        for (let i = 0; i < this.requests.length; i++) {
+            let request = this.requests[i];
+            if (request.recvFrame != null) continue;
+            this.packets.push((now - request.sentAt) / Math.max(60, this.latencyMs));
+        }
+        //#endregion
+
+        //#region the bars, from the newest answer
+        // A recv record carries a choice and a confidence but not the whole distribution.
+        // The question is binary, so the other option gets the rest of the probability;
+        // when the spent answer is the one that just landed we use its real numbers.
+        let recv = this.lastRecv;
+        let probabilities = (decision != null && decision.probabilities != null) ? decision.probabilities : null;
+        let exact = probabilities != null && (recv == null || recv.choice === decision.choice);
+
+        JEV_DECISION_OPTIONS.forEach(option => {
+            if (exact && typeof probabilities[option] === "number") {
+                this.bars[option] = probabilities[option];
+            } else if (recv != null && typeof recv.confidence === "number") {
+                this.bars[option] = recv.choice === option ? recv.confidence : 1 - recv.confidence;
+            } else {
+                this.bars[option] = null;
+            }
         });
+        //#endregion
+
+        let model = this.flowModel;
+        model.w = canvas.w;
+        model.h = canvas.h;
+        model.choice = recv != null ? recv.choice : null;
+        model.spark = Math.max(0, 1 - (now - this.sparkAt) / JEV_PULSE_MS);
+        model.pulse = Math.max(0, 1 - (now - this.pulseAt) / JEV_PULSE_MS);
+
+        JevDashboard.drawFlow(canvas.ctx, model);
     }
 
-    appliedText(applied) {
-        if (applied == null || applied.choice == null) return "last applied: none";
+    drawTimeline() {
+        let canvas = this.timelineCanvas;
+        if (!this.syncCanvas(canvas)) return;
 
-        return "last applied: " + applied.choice + " #" + applied.reqId +
-            ", " + applied.lateBy + "f late";
+        this.timelineModel.w = canvas.w;
+        this.timelineModel.h = canvas.h;
+
+        JevDashboard.drawTimeline(canvas.ctx, this.timelineModel, this.nowFrame);
     }
+    //#endregion
 
+    //#region the one call the scene makes
     update(view) {
         if (this.destroyed || view == null) return;
+
+        this.frames++;
 
         if (this.cache.status !== view.status) {
             this.cache.status = view.status;
@@ -392,41 +721,54 @@ class JevPanel {
             this.statusLabel.textContent = view.status;
         }
 
-        //#region scene fields
+        this.ingest(view.trace);
+
+        //the scene tells us its frame; fall back to counting while live if it does not
+        if (view.numbers != null && view.numbers.frame != null) this.nowFrame = view.numbers.frame;
+        else if (view.status === "live") this.nowFrame++;
+
         let described = view.described || {};
-        let fields = described.fields;
+        let numbers = view.numbers || {};
 
-        this.setText("described", this.describedLabel,
-            "described (at +" + (described.leadFrames != null ? described.leadFrames : 0) + "f)");
+        //#region the slow half: words and numbers
+        if (this.frames % JEV_BADGE_EVERY === 0) {
+            this.updateBadges(numbers);
 
-        JEV_SCENE_ROWS.forEach(row => {
-            let value = (fields != null && fields[row.key] != null) ? String(fields[row.key]) : "-";
-            this.setText("f:" + row.key, this.fieldNodes[row.key], value);
-        });
+            let fields = described.fields;
+            this.setText("w:position", this.positionWord, fields != null ? fields.position : "-");
+            this.setText("w:motion", this.motionWord, fields != null ? fields.motion : "-");
+            this.setText("described", this.describedLabel,
+                "described at +" + (described.leadFrames != null ? described.leadFrames : 0) + "f");
+
+            let applied = view.lastApplied;
+            let confidence = (applied != null && typeof applied.confidence === "number") ?
+                applied.confidence.toFixed(2) : "-";
+            this.setText("decision", this.decisionWord,
+                applied != null && applied.choice != null ? applied.choice + "  " + confidence : "-");
+
+            JEV_COUNTERS.forEach(counter => {
+                let value = numbers[counter.key];
+                this.setText("c:" + counter.key, this.counterNodes[counter.key],
+                    value != null ? String(value) : "-");
+            });
+
+            this.setText("inflight", this.inFlightLabel,
+                "in flight " + (numbers.inFlight != null ? numbers.inFlight : this.inFlightCount()) +
+                ", held " + (numbers.held != null ? numbers.held : "-"));
+        }
         //#endregion
 
-        //#region decision
-        this.updateOptionList("d", JEV_DECISION_OPTIONS, this.decisionNodes, view.decision);
+        if (!this.isVisible()) return;
 
-        let confidence = (view.decision != null && typeof view.decision.confidence === "number") ?
-            view.decision.confidence.toFixed(2) : "-";
-        this.setText("confidence", this.confidenceLabel, "confidence " + confidence);
-
-        this.setText("applied", this.appliedLabel, this.appliedText(view.lastApplied));
+        //#region the fast half: one repaint per frame, no more
+        this.drawSnapshot(described);
+        this.drawFlow(view.decision);
+        this.drawTimeline();
         //#endregion
 
-        //#region meta
-        let meta = view.meta || {};
-        JEV_META_ROWS.forEach(row => {
-            let value = (meta[row.key] != null) ? String(meta[row.key]) : "-";
-            this.setText("m:" + row.key, this.metaNodes[row.key], value);
-        });
-        //#endregion
-
-        //#region trace
-        this.updateTrace(view.trace);
-        //#endregion
+        if (this.traceFold.classList.contains("is-open")) this.updateTrace(view.trace);
     }
+    //#endregion
 
     // The log only ever grows, so its sequence number is enough to know whether
     // anything happened; nothing touches the DOM on a quiet frame.

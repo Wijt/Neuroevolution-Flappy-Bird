@@ -60,6 +60,7 @@ body {
     border-color: red;
 }
 
+/* the jev dashboard: a dark column of small panels beside the game window */
 .jev-panel {
     position: fixed;
     z-index: 10;
@@ -125,71 +126,122 @@ body {
     border-bottom: 1px solid #1f4068;
 }
 
-.jev-dl {
-    display: grid;
-    grid-template-columns: 86px 1fr;
-    gap: 1px 8px;
-    margin: 4px 0 0 0;
+/* the health of the loop, one small chip each */
+.jev-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 8px;
 }
 
-.jev-dl dt {
-    color: #8fa6c8;
+.jev-badge {
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+    padding: 1px 5px;
+
+    background: #10101f;
+    border: 1px solid #1f4068;
+    border-radius: 3px;
+
+    font-size: 10px;
 }
 
-.jev-dl dd {
-    margin: 0;
-    word-break: break-word;
+.jev-badge-name {
+    color: #6f86a8;
 }
 
-.jev-val {
+.jev-badge-value {
     color: #dfe6f3;
+}
+
+.jev-canvas {
+    display: block;
+    width: 100%;
+    margin-top: 4px;
+
+    border: 1px solid #1f4068;
+    border-radius: 3px;
+}
+
+/* the words carry the decision, so they get the big type */
+.jev-word {
+    margin-top: 5px;
+    color: #ffffff;
+    font-size: 17px;
+    line-height: 1.2;
+    letter-spacing: 0.02em;
+}
+
+.jev-word-soft {
+    color: #8fa6c8;
+    font-size: 14px;
 }
 
 /* the quiet lines: what the numbers are about, what was last spent */
 .jev-dim {
     color: #6f86a8;
-}
-
-.jev-dim + .jev-dl {
     margin-top: 2px;
 }
 
-.jev-read-row {
-    display: grid;
-    grid-template-columns: 1fr 60px 30px;
-    align-items: center;
+.jev-counters {
+    display: flex;
     gap: 6px;
+    margin-top: 6px;
+}
+
+.jev-counter {
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+    font-size: 10px;
+    color: #6f86a8;
+}
+
+.jev-counter-value {
+    font-size: 13px;
     color: #8fa6c8;
 }
 
-.jev-read-row.is-choice {
-    color: #ffffff;
-    font-weight: bold;
+.jev-counter.is-applied .jev-counter-value { color: #4c9f70; }
+.jev-counter.is-superseded .jev-counter-value { color: #e8a33d; }
+.jev-counter.is-stale .jev-counter-value { color: #e43f5a; }
+
+/* the raw log, folded away until you want it */
+.jev-fold {
+    margin-top: 10px;
+    border-top: 1px solid #1f4068;
 }
 
-.jev-mini {
+.jev-fold-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding-top: 4px;
+
+    color: #8fa6c8;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    cursor: pointer;
+    user-select: none;
+}
+
+.jev-caret {
+    display: inline-block;
+    font-size: 8px;
+    transition: 0.15s ease transform;
+}
+
+.jev-fold.is-open .jev-caret {
+    transform: rotate(90deg);
+}
+
+.jev-fold-body {
+    display: none;
+}
+
+.jev-fold.is-open .jev-fold-body {
     display: block;
-    height: 6px;
-    background: #162447;
-}
-
-.jev-mini-fill {
-    display: block;
-    width: 0%;
-    height: 100%;
-    background: #1f4068;
-}
-
-.jev-read-row.is-choice .jev-mini-fill {
-    background: #e43f5a;
-}
-
-.jev-read-p {
-    text-align: right;
-}
-
-.jev-read + .jev-val {
-    margin-top: 4px;
 }
 
 .jev-legend {

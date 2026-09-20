@@ -51,6 +51,23 @@ const JEV_KEY_PAUSE = 80;
 const JEV_KEY_STEP = 78;
 const JEV_KEY_NEXT_EVENT = 77;
 
+//V, the "what Jev sees" overlay: the last question drawn on top of the game
+const JEV_KEY_OVERLAY = 86;
+
+//#region overlay looks
+//the upper half of the gap is tinted cool, the lower half takes BIRD_COLOR
+const JEV_OVERLAY_COOL = "#4f8a8b";
+
+//a clearance that already went negative is called out in this tint
+const JEV_OVERLAY_WARN = "#ffcb74";
+
+//the motion arrow never grows past this, whatever the velocity says
+const JEV_OVERLAY_ARROW_MAX = 40;
+
+//px of arrow per px of velocity per game frame
+const JEV_OVERLAY_ARROW_SCALE = 6;
+//#endregion
+
 //the trace keeps the same two decimals the harness writes, nothing more
 function jevRound2(n) {
     return Math.round(n * 100) / 100;
@@ -96,9 +113,18 @@ class JevScene extends Scene {
         this.lastSentLead = 0;
         this.lastApplied = null;
 
+        //everything the last request described, kept whole so the overlay can draw it
+        this.lastSent = null;
+
         this.abortedOnDeath = false;
 
         //#region debug mode
+        //V: off by default and sticky across restarts, it is a viewing preference
+        this.overlayOn = false;
+
+        //the overlay's p5 colours, built on the first draw and kept
+        this.overlayColors = null;
+
         //the warm start: nothing moves until the pilot has answered once
         this.waitingForPilot = false;
 
@@ -166,6 +192,7 @@ class JevScene extends Scene {
         this.lastSentFields = null;
         this.lastSentLead = 0;
         this.lastApplied = null;
+        this.lastSent = null;
 
         this.abortedOnDeath = false;
 
@@ -380,6 +407,16 @@ class JevScene extends Scene {
         this.lastSentFields = description.fields;
         this.lastSentLead = leadFrames;
 
+        //and the overlay draws the whole question: the predicted bird and the pipe it was about
+        this.lastSent = {
+            frame: this.frame,
+            targetFrame: targetFrame,
+            leadFrames: leadFrames,
+            fields: description.fields,
+            predicted: description.predicted,
+            gap: this.describedGap(description.predicted.pipeShift)
+        };
+
         this.writeTrace({
             t: "send",
             frame: this.frame,
@@ -397,6 +434,28 @@ class JevScene extends Scene {
         this.events++;
 
         return reqId;
+    }
+
+    // Which pipe the translator just described, as it stands on screen right now.
+    // Same criterion, same order, same numbers: the first pipe whose trailing edge is
+    // still ahead of the bird's back edge once the scroll of the lead is taken off.
+    // The rect itself is the real one, the shift only picks the pipe.
+    describedGap(pipeShift) {
+        let back = this.bird.pos.x - JEV_COLLISION_R;
+
+        for (let i = 0; i < this.pipes.length; i++) {
+            let pipe = this.pipes[i];
+            if (pipe.topPipe.x2 - pipeShift > back) {
+                return {
+                    top: pipe.topPipe.y2,
+                    bottom: pipe.bottomPipe.y1,
+                    x1: pipe.topPipe.x1,
+                    x2: pipe.topPipe.x2
+                };
+            }
+        }
+
+        return null;
     }
 
     // The warm start request failed, so wait out the backoff and ask again.
@@ -626,6 +685,8 @@ class JevScene extends Scene {
 
         return {
             status: status,
+            overlay: this.overlayOn,
+            lastSent: this.lastSent,
             described: {
                 fields: this.lastSentFields,
                 leadFrames: this.lastSentLead
@@ -636,6 +697,23 @@ class JevScene extends Scene {
                 probabilities: applied.probabilities
             } : null,
             lastApplied: applied,
+            //the same facts as plain numbers, for the dashboard's badges and counters
+            numbers: {
+                frame: this.frame,
+                inFlight: this.client.inFlight,
+                held: this.held.length,
+                sent: stats.requests,
+                applied: stats.applied,
+                superseded: stats.superseded,
+                stale: stats.stale,
+                leadMs: Math.round(this.leadMs),
+                leadFrames: this.leadFrames(),
+                latencyMs: stats.lastLatencyMs,
+                inputTokens: stats.inputTokens,
+                outputTokens: stats.outputTokens,
+                errors: stats.errors,
+                timeScale: JEV_TIME_SCALE
+            },
             meta: {
                 inFlight: this.client.inFlight + " / " + JEV_MAX_IN_FLIGHT,
                 held: this.held.length,
@@ -657,6 +735,146 @@ class JevScene extends Scene {
             }
         };
     }
+
+    //#region overlay
+    // The colours are p5 objects, so build them once and keep them: the overlay runs
+    // every frame and color() allocates. They cannot be made in the constructor,
+    // p5 is not up yet there.
+    ensureOverlayColors() {
+        if (this.overlayColors != null) return;
+
+        let ghostLine = color(BIRD_COLOR);
+        ghostLine.setAlpha(160);
+
+        let ghostFill = color(BIRD_COLOR);
+        ghostFill.setAlpha(64); //a quarter, so the pipes stay readable through it
+
+        let lowerHalf = color(BIRD_COLOR);
+        lowerHalf.setAlpha(90);
+
+        let upperHalf = color(JEV_OVERLAY_COOL);
+        upperHalf.setAlpha(90);
+
+        let warn = color(JEV_OVERLAY_WARN);
+        warn.setAlpha(190);
+
+        let plain = color(255, 255, 255, 140);
+
+        let faint = color(255, 255, 255, 95);
+
+        this.overlayColors = {
+            ghostLine: ghostLine,
+            ghostFill: ghostFill,
+            lowerHalf: lowerHalf,
+            upperHalf: upperHalf,
+            warn: warn,
+            plain: plain,
+            faint: faint
+        };
+    }
+
+    // What the last request actually said: the bird where the question put it, the pipe
+    // the question was about and the five numbers the panel prints in words. Nothing here
+    // reads the world, it all comes off lastSent, so this is the question and not the now.
+    drawOverlay() {
+        this.ensureOverlayColors();
+
+        let sent = this.lastSent;
+        let fields = sent.fields;
+        let colors = this.overlayColors;
+        let gap = sent.gap;
+        let r = JEV_COLLISION_R;
+        let ghostY = sent.predicted.birdY;
+
+        push(); //the ghost: where the question said the bird would be when the answer lands
+            stroke(colors.faint);
+            strokeWeight(1);
+            line(BIRD_X, this.bird.pos.y, BIRD_X, ghostY);
+
+            stroke(colors.ghostLine);
+            strokeWeight(2);
+            fill(colors.ghostFill);
+            ellipse(BIRD_X, ghostY, r * 2, r * 2);
+
+            noStroke();
+            fill(colors.ghostLine);
+            textSize(11);
+            textAlign(RIGHT, CENTER);
+            text("+" + sent.leadFrames + "f", BIRD_X - r - 6, ghostY);
+        pop();
+
+        if (gap != null) {
+            let middle = (gap.top + gap.bottom) / 2;
+            let aboveColor = fields.above < 0 ? colors.warn : colors.plain;
+            let belowColor = fields.below < 0 ? colors.warn : colors.plain;
+
+            push(); //the gap split at its middle: cool above, warm below
+                noStroke();
+                fill(colors.upperHalf);
+                rect(gap.x1, gap.top, gap.x2 - gap.x1, middle - gap.top);
+                fill(colors.lowerHalf);
+                rect(gap.x1, middle, gap.x2 - gap.x1, gap.bottom - middle);
+            pop();
+
+            push(); //the two clearances, exactly the px the question carried
+                strokeWeight(1);
+                textSize(11);
+                textAlign(RIGHT, CENTER);
+
+                stroke(aboveColor);
+                line(BIRD_X, ghostY - r, BIRD_X, gap.top);
+                stroke(belowColor);
+                line(BIRD_X, ghostY + r, BIRD_X, gap.bottom);
+
+                noStroke();
+                fill(aboveColor);
+                text(fields.above + " px", BIRD_X - 5, (ghostY - r + gap.top) / 2);
+                fill(belowColor);
+                text(fields.below + " px", BIRD_X - 5, (ghostY + r + gap.bottom) / 2);
+            pop();
+
+            push(); //the ruler: nose of the ghost to the front of the pipe
+                stroke(colors.plain);
+                strokeWeight(1);
+                line(BIRD_X + r, ghostY, gap.x1, ghostY);
+                line(BIRD_X + r, ghostY - 4, BIRD_X + r, ghostY + 4);
+                line(gap.x1, ghostY - 4, gap.x1, ghostY + 4);
+
+                noStroke();
+                fill(colors.plain);
+                textSize(11);
+                textAlign(CENTER, BOTTOM);
+                text(fields.distance + " px", (BIRD_X + r + gap.x1) / 2, ghostY - 5);
+            pop();
+        }
+
+        push(); //the two words the decision is really made of
+            noStroke();
+            fill(255, 255, 255, 150);
+            textSize(11);
+            textAlign(LEFT, TOP);
+            text(fields.position, BIRD_X + r + 8, ghostY + 6);
+            text(fields.motion, BIRD_X + r + 8, ghostY + 20);
+        pop();
+
+        //the arrow is the motion, so "level" gets none
+        if (fields.motion !== "level") {
+            let velocity = sent.predicted.birdVelocity;
+            let length = Math.min(JEV_OVERLAY_ARROW_MAX, Math.abs(velocity) * JEV_OVERLAY_ARROW_SCALE);
+            let way = velocity < 0 ? -1 : 1;
+            let x = BIRD_X - 13;
+            let tip = ghostY + way * length;
+
+            push();
+                stroke(colors.ghostLine);
+                strokeWeight(2);
+                line(x, ghostY, x, tip);
+                line(x, tip, x - 4, tip - way * 5);
+                line(x, tip, x + 4, tip - way * 5);
+            pop();
+        }
+    }
+    //#endregion
 
     draw() {
         background(color(BG_COLOR));
@@ -680,6 +898,9 @@ class JevScene extends Scene {
             textSize(60);
             text(this.bird.score, width/2, 60);
         pop();
+
+        //V: the last question, drawn where it was asked about
+        if (this.overlayOn && this.lastSent != null && this.bird.live) this.drawOverlay();
 
         if (this.bird.live && this.waitingForPilot) {
             push(); //the bird hangs here until the first answer is in
@@ -730,6 +951,10 @@ class JevScene extends Scene {
         if (!this.gameStarted) return;
 
         //the debug keys, only ever read here so no other scene sees them
+        if (keyCode === JEV_KEY_OVERLAY) {
+            this.overlayOn = !this.overlayOn;
+            return;
+        }
         if (keyCode === JEV_KEY_PAUSE) {
             this.togglePause();
             return;
