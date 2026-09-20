@@ -1,141 +1,114 @@
-// Pure scene translator for the Jev pilot.
-// Turns raw numbers from the game loop into a small, fixed vocabulary.
+// Pure scene translator for the Jev pilot, v2.
+// Turns raw numbers from the game loop into the snapshot Jev decides on.
 // No p5 globals, no DOM, no width/height. Safe to require() from Node.
+//
+// v2 follows the shape that has been shown to fly (words that mirror the answer
+// options, plain numbers beside them) and adds predict(): the scene as it will be
+// when the answer lands, assuming the bird is left alone. Code predicts where the
+// world will be; Jev decides what to do there.
 var JevTranslator = (function () {
-    var VERSION = "1.5.0";
+    var VERSION = "2.0.0";
 
-    var RULES_TEXT = "The bird flies right at constant speed and cannot slow down or turn. Gravity pulls it down constantly. A flap gives one short upward hop, after which it falls again; flapping repeatedly stacks hops upward. A single hop from the middle of an opening carries the bird all the way up into the top pipe, so the bird should only hop when it is below the middle of the opening. Passing a pipe takes a while: a bird that enters the opening falling and does not flap while inside drops out through the bottom pipe before it is through. Pipes arrive from the right; each has a top and bottom pipe with an opening between them. Touching a pipe, the ground or the ceiling ends the flight.";
+    // physics, copied from constants.js / bird.js / pipe.js so Node can run it too
+    var GRAVITY = 0.4;
+    var PIPE_SCROLL = 2;
 
-    // v is px/frame, negative is upward on screen.
-    function verticalMotion(v) {
-        if (v <= -4) return "shooting upward from a flap";
-        if (v <= -1) return "still rising";
-        if (v < 1) return "hanging at the top of its hop";
-        if (v < 3) return "starting to fall";
-        if (v < 6) return "falling";
-        return "dropping fast";
+    // v is px per game frame, negative is upward on screen
+    function motion(v) {
+        if (v < -1) return "rising";
+        if (v <= 1) return "level";
+        if (v <= 4) return "falling";
+        return "falling fast";
     }
 
-    // offset = birdY - gapCenter, positive means the bird is below the gap centre.
-    // Below the middle the bands are sized in hops (~46 px each) because that is the
-    // unit the pilot acts in: one hop from "one hop below" lands in the middle.
-    function placeInGap(offset) {
-        if (Math.abs(offset) <= 10) return "in the middle of the gap";
-        if (offset < -50) return "far above the opening, in front of the top pipe";
-        if (offset <= -35) return "close to the top pipe edge";
-        if (offset < 0) return "a little above the middle";
-        if (offset <= 40) return "a little below the middle";
-        if (offset <= 80) return "about one hop below the middle, near the bottom pipe";
-        if (offset <= 125) return "about two hops below the opening, in front of the bottom pipe";
-        return "several hops below the opening, far under it";
+    // above/below are clearances in px between the bird's edge and the gap edges
+    function position(above, below) {
+        if (above < 0) return "above the gap";
+        if (below < 0) return "below the gap";
+        if (above < below) return "inside the gap, upper half";
+        return "inside the gap, lower half";
     }
 
-    function lastFlap(frames) {
-        if (frames < 6) return "flapped just now";
-        if (frames <= 20) return "flapped a moment ago";
-        return "has not flapped recently";
+    // Advance the world by `frames` draw frames with the bird left alone.
+    // dt is the physics step per draw frame (1 at normal speed, 1/4 at quarter speed).
+    function predict(input, frames, dt) {
+        dt = dt || 1;
+        var y = input.birdY;
+        var v = input.birdVelocity;
+        var groundY = input.groundY;
+        var n = Math.max(0, Math.round(frames));
+        for (var i = 0; i < n; i++) {
+            if (y < groundY) {
+                y += v * dt;
+                v += GRAVITY * dt;
+            } else {
+                y = groundY;
+            }
+        }
+        var shift = PIPE_SCROLL * dt * n;
+        return { birdY: y, birdVelocity: v, pipeShift: shift };
     }
 
-    function surroundings(info) {
-        var birdY = info.birdY;
-        var birdRadius = info.birdRadius;
-        var groundY = info.groundY;
-        if (groundY - (birdY + birdRadius) < 60) return "the ground is close below";
-        if (birdY - birdRadius < 60) return "the ceiling is close above";
-        return "open sky above and below";
-    }
+    /**
+     * input: { birdX, birdY, birdVelocity, birdRadius, groundY,
+     *          pipes: [{x1, x2, gapTop, gapBottom}, ...] sorted left to right }
+     * leadFrames: how far ahead to describe (0 = now); dt: physics step per frame
+     * returns { state, fields, predicted } or null when no pipe is ahead
+     */
+    function describeScene(input, leadFrames, dt) {
+        var p = predict(input, leadFrames || 0, dt);
+        var r = input.birdRadius;
+        var front = input.birdX + r;
 
-    function pipeDistance(info) {
-        var birdX = info.birdX;
-        var birdRadius = info.birdRadius;
-        var x1 = info.x1;
-        var x2 = info.x2;
-        if (birdX >= x1 && birdX <= x2) return "between the pipes right now";
-        var d = x1 - (birdX + birdRadius);
-        if (d < 40) return "right in front of the bird";
-        if (d < 100) return "close ahead";
-        if (d < 200) return "some distance ahead";
-        return "far ahead";
-    }
+        // same criterion the scenes use: the first pipe whose trailing edge is still ahead
+        var pipe = null;
+        for (var i = 0; i < input.pipes.length; i++) {
+            var c = input.pipes[i];
+            if (c.x2 - p.pipeShift > input.birdX - r) { pipe = c; break; }
+        }
+        if (pipe == null) return null;
 
-    // delta = followingGapCenter - currentGapCenter; screen y grows downward, so a
-    // negative delta means the next gap sits higher on the screen.
-    function followingGap(delta) {
-        if (Math.abs(delta) <= 20) return "at about the same height as the bird";
-        if (delta < -60) return "far above the bird";
-        if (delta < 0) return "slightly above the bird";
-        if (delta > 60) return "far below the bird";
-        return "slightly below the bird";
-    }
-
-    function describeScene(input) {
-        var nextPipe = input.nextPipe;
-        var followingPipe = input.followingPipe;
+        var y = Math.round(p.birdY);
+        var gapTop = Math.round(pipe.gapTop);
+        var gapBottom = Math.round(pipe.gapBottom);
+        var above = (y - r) - gapTop;
+        var below = gapBottom - (y + r);
+        var distance = Math.max(0, Math.round(pipe.x1 - p.pipeShift - front));
 
         var fields = {
-            vertical_motion: verticalMotion(input.birdVelocity),
-            place_in_gap: placeInGap(input.birdY - nextPipe.gapCenter),
-            last_flap: lastFlap(input.framesSinceFlap),
-            surroundings: surroundings({
-                birdY: input.birdY,
-                birdRadius: input.birdRadius,
-                groundY: input.groundY
-            }),
-            distance: pipeDistance({
-                birdX: input.birdX,
-                birdRadius: input.birdRadius,
-                x1: nextPipe.x1,
-                x2: nextPipe.x2
-            }),
-            following_gap: null
+            position: position(above, below),
+            motion: motion(p.birdVelocity),
+            above: above,
+            below: below,
+            distance: distance
         };
-
-        var betweenPipes = fields.distance === "between the pipes right now";
-        if (betweenPipes && followingPipe) {
-            fields.following_gap = followingGap(followingPipe.gapCenter - nextPipe.gapCenter);
-        }
 
         var state = {
-            rules: RULES_TEXT,
             bird: {
-                vertical_motion: fields.vertical_motion,
-                place_in_gap: fields.place_in_gap,
-                last_flap: fields.last_flap,
-                surroundings: fields.surroundings
+                y: y,
+                velocity_y: Math.round(p.birdVelocity * 10) / 10,
+                position: fields.position,
+                motion: fields.motion,
+                clearance_above_bird_to_gap_top: above,
+                clearance_below_bird_to_gap_bottom: below
             },
-            pipe_ahead: {
-                distance: fields.distance
-            }
+            next_pipe: {
+                distance_x: distance,
+                gap_top_y: gapTop,
+                gap_bottom_y: gapBottom
+            },
+            y_axis: "y grows downward; smaller y is higher"
         };
-        if (fields.following_gap !== null) {
-            state.next_opening = fields.following_gap;
-        }
 
-        var prose = RULES_TEXT +
-            " Right now the bird is " + fields.vertical_motion +
-            ", it is " + fields.place_in_gap +
-            ", it " + fields.last_flap +
-            ", and " + fields.surroundings +
-            (betweenPipes
-                ? ". The bird is between the pipes right now."
-                : ". The next pipe is " + fields.distance + ".");
-        if (fields.following_gap !== null) {
-            prose += " The next opening after this one is " + fields.following_gap + ".";
-        }
-
-        return { state: state, prose: prose, fields: fields };
+        return { state: state, fields: fields, predicted: p };
     }
 
     return {
         VERSION: VERSION,
-        RULES_TEXT: RULES_TEXT,
         describeScene: describeScene,
-        verticalMotion: verticalMotion,
-        placeInGap: placeInGap,
-        lastFlap: lastFlap,
-        surroundings: surroundings,
-        pipeDistance: pipeDistance,
-        followingGap: followingGap
+        predict: predict,
+        motion: motion,
+        position: position
     };
 })();
 

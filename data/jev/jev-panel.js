@@ -1,44 +1,32 @@
 // The side panel that shows what Jev is thinking.
 // Plain DOM on purpose: p5 0.10.2's createDiv() is clumsy for something this nested,
 // and the panel must never touch the canvas.
-const JEV_MANEUVER_OPTIONS = [
-    "let_it_fall",
-    "one_hop",
-    "two_hops",
-    "climb_hard"
-];
-
-const JEV_READ_OPTIONS = [
-    "too_high",
-    "aligned",
-    "too_low",
-    "entering_pipe_misaligned",
-    "ground_danger",
-    "ceiling_danger"
+//
+// v2 shows three things and no more: the scene we described in the last request
+// (which is the world as it will be, not as it is), the answer the loop last spent,
+// and the bookkeeping that says whether the timing is working.
+const JEV_DECISION_OPTIONS = [
+    "FLAP",
+    "WAIT"
 ];
 
 const JEV_SCENE_ROWS = [
-    { key: "vertical_motion", label: "motion" },
-    { key: "place_in_gap", label: "place" },
-    { key: "last_flap", label: "last flap" },
-    { key: "surroundings", label: "around" },
-    { key: "distance", label: "pipe ahead" },
-    { key: "following_gap", label: "next gap" }
-];
-
-const JEV_DANGER_LEVELS = [
-    "comfortably safe",
-    "needs a correction soon",
-    "one wrong move from a collision",
-    "collision nearly unavoidable"
+    { key: "position", label: "position" },
+    { key: "motion", label: "motion" },
+    { key: "above", label: "above" },
+    { key: "below", label: "below" },
+    { key: "distance", label: "pipe ahead" }
 ];
 
 const JEV_META_ROWS = [
     { key: "inFlight", label: "in flight" },
-    { key: "requests", label: "requests" },
-    { key: "tokens", label: "tokens" },
+    { key: "sent", label: "sent" },
+    { key: "applied", label: "applied" },
+    { key: "superseded", label: "superseded" },
+    { key: "stale", label: "stale" },
+    { key: "lead", label: "lead" },
     { key: "latency", label: "last latency" },
-    { key: "discarded", label: "discarded" },
+    { key: "tokens", label: "tokens" },
     { key: "errors", label: "errors" },
     { key: "speed", label: "speed" }
 ];
@@ -46,12 +34,12 @@ const JEV_META_ROWS = [
 //how many trace lines the panel keeps on screen, the log itself is much longer
 const JEV_TRACE_SHOWN = 12;
 
-//the short maneuver names the harness timeline uses
-const JEV_MANEUVER_SHORT = {
-    let_it_fall: "fall",
-    one_hop: "1hop",
-    two_hops: "2hop",
-    climb_hard: "climb"
+//the timeline says "lower half", the snapshot says "inside the gap, lower half"
+const JEV_POSITION_SHORT = {
+    "above the gap": "above gap",
+    "below the gap": "below gap",
+    "inside the gap, upper half": "upper half",
+    "inside the gap, lower half": "lower half"
 };
 
 //#region trace formatting
@@ -74,11 +62,6 @@ function jevPadLeft(text, width) {
     return s;
 }
 
-function jevSigned(n) {
-    let r = Math.round(n);
-    return (r >= 0 ? "+" : "") + r;
-}
-
 //probabilities read better without the leading zero: .61
 function jevProb(p) {
     let n = Number(p);
@@ -87,55 +70,56 @@ function jevProb(p) {
     return text.charAt(0) === "0" ? text.slice(1) : text;
 }
 
-function jevProbList(probabilities) {
-    return "[" + JEV_MANEUVER_OPTIONS.map(option => {
-        return JEV_MANEUVER_SHORT[option] + " " +
-            jevProb(probabilities != null ? probabilities[option] : null);
-    }).join(" ") + "]";
+function jevShortPosition(position) {
+    if (position == null) return "-";
+    return JEV_POSITION_SHORT[position] != null ? JEV_POSITION_SHORT[position] : position;
 }
 
-// one record -> one or two lines, the second one being the phrases we sent
+// one record -> one timeline line
 function jevTraceLines(record) {
     if (record == null) return [];
 
     if (record.t === "header") {
-        return ["-- run " + record.runId +
-            (record.lockstep ? " lockstep" : " live") +
-            " warm start, tick " + record.tick +
+        return ["-- run " + record.runId + " v" + record.version +
+            ", tick " + record.tickMs + "ms, " + record.maxInFlight + " in flight" +
+            ", late " + record.lateFrames + "f, speed 1/" + record.timeScale +
             ", translator " + record.translator];
     }
 
     if (record.t === "send") {
-        let fields = record.state || {};
-        let head = jevFrameTag(record.frame) + " send " + jevPad("#" + record.reqId, 4) +
-            " y=" + jevPadLeft(Math.round(record.birdY), 3) +
-            " v=" + jevPadLeft(Number(record.vel).toFixed(1), 5) +
-            " gap=" + (record.gapCenter == null ? "-" : Math.round(record.gapCenter)) +
-            " pipe=" + jevPadLeft(record.pipeX1 == null ? "-" : jevSigned(record.pipeX1 - BIRD_X), 5);
+        let fields = record.fields || {};
+        let actual = record.actual || {};
 
-        let phrases = [fields.vertical_motion, fields.place_in_gap, fields.distance]
-            .map(phrase => phrase != null ? phrase : "-")
-            .join(" | ");
-
-        return [head, "        " + phrases];
+        return [jevFrameTag(record.frame) + " send " + jevPad("#" + record.reqId, 4) +
+            " ->" + jevFrameTag(record.targetFrame) + " (" + record.leadFrames + "f)" +
+            " y=" + jevPadLeft(Math.round(actual.birdY), 3) +
+            " v=" + jevPadLeft(Number(actual.vel).toFixed(1), 5) +
+            " | " + jevShortPosition(fields.position) +
+            " | " + (fields.motion != null ? fields.motion : "-") +
+            " | dist " + (fields.distance != null ? fields.distance : "-")];
     }
 
     if (record.t === "recv") {
         let choice = record.choice || "?";
         let p = (record.probs != null && record.choice != null) ? record.probs[record.choice] : null;
-        let latencyFrames = (record.sentFrame != null) ? (record.frame - record.sentFrame) : "?";
 
         return [jevFrameTag(record.frame) + " recv " + jevPad("#" + record.reqId, 4) +
-            " (" + latencyFrames + "f, " + record.latencyMs + "ms)" +
-            " -> " + choice + " " + jevProb(p) +
-            " " + jevProbList(record.probs) +
-            " danger " + (record.danger == null ? "-" : Number(record.danger).toFixed(1)) +
-            " y=" + Math.round(record.birdY) +
-            " v=" + Number(record.vel).toFixed(1)];
+            " (" + record.latencyMs + "ms) " + choice + " " + jevProb(p) +
+            " " + record.outcome];
     }
 
-    if (record.t === "hop") {
-        return [jevFrameTag(record.frame) + " hop (" + record.hopsLeft + " left)"];
+    if (record.t === "apply") {
+        return [jevFrameTag(record.frame) + " apply " + jevPad("#" + record.reqId, 4) +
+            " " + (record.choice || "?") + " (" + record.lateBy + "f late)"];
+    }
+
+    if (record.t === "stale") {
+        return [jevFrameTag(record.frame) + " stale " + jevPad("#" + record.reqId, 4) +
+            " ->" + jevFrameTag(record.targetFrame)];
+    }
+
+    if (record.t === "flap") {
+        return [jevFrameTag(record.frame) + " flap"];
     }
 
     if (record.t === "death") {
@@ -155,8 +139,7 @@ class JevPanel {
         this.cache = {};
 
         this.fieldNodes = {};
-        this.maneuverNodes = {};
-        this.readNodes = {};
+        this.decisionNodes = {};
         this.metaNodes = {};
 
         this.build();
@@ -206,6 +189,14 @@ class JevPanel {
         //#region scene fields
         this.root.appendChild(this.makeTitle("scene"));
 
+        let sceneBox = document.createElement("div");
+
+        //the numbers are the predicted world, saying so avoids a lot of confusion
+        this.describedLabel = document.createElement("div");
+        this.describedLabel.className = "jev-dim";
+        this.describedLabel.textContent = "described (at +0f)";
+        sceneBox.appendChild(this.describedLabel);
+
         let list = document.createElement("dl");
         list.className = "jev-dl";
         JEV_SCENE_ROWS.forEach(row => {
@@ -217,34 +208,28 @@ class JevPanel {
             list.appendChild(value);
             this.fieldNodes[row.key] = value;
         });
-        this.root.appendChild(this.wrap(list));
+        sceneBox.appendChild(list);
+
+        this.root.appendChild(this.wrap(sceneBox));
         //#endregion
 
-        //#region maneuver
-        this.root.appendChild(this.makeTitle("maneuver"));
+        //#region decision
+        this.root.appendChild(this.makeTitle("decision"));
 
-        let maneuverBox = document.createElement("div");
-        maneuverBox.appendChild(this.makeOptionList(JEV_MANEUVER_OPTIONS, this.maneuverNodes));
+        let decisionBox = document.createElement("div");
+        decisionBox.appendChild(this.makeOptionList(JEV_DECISION_OPTIONS, this.decisionNodes));
 
-        this.planLabel = document.createElement("div");
-        this.planLabel.className = "jev-val";
-        this.planLabel.textContent = "plan: none";
-        maneuverBox.appendChild(this.planLabel);
+        this.confidenceLabel = document.createElement("div");
+        this.confidenceLabel.className = "jev-val";
+        this.confidenceLabel.textContent = "confidence -";
+        decisionBox.appendChild(this.confidenceLabel);
 
-        this.root.appendChild(this.wrap(maneuverBox));
-        //#endregion
+        this.appliedLabel = document.createElement("div");
+        this.appliedLabel.className = "jev-dim";
+        this.appliedLabel.textContent = "last applied: none";
+        decisionBox.appendChild(this.appliedLabel);
 
-        //#region read
-        this.root.appendChild(this.makeTitle("read"));
-        this.root.appendChild(this.wrap(this.makeOptionList(JEV_READ_OPTIONS, this.readNodes)));
-        //#endregion
-
-        //#region danger
-        this.root.appendChild(this.makeTitle("danger"));
-        this.dangerLabel = document.createElement("div");
-        this.dangerLabel.className = "jev-val";
-        this.dangerLabel.textContent = "-";
-        this.root.appendChild(this.wrap(this.dangerLabel));
+        this.root.appendChild(this.wrap(decisionBox));
         //#endregion
 
         //#region meta
@@ -270,7 +255,7 @@ class JevPanel {
 
         let legend = document.createElement("div");
         legend.className = "jev-legend";
-        legend.textContent = "P pause  N step  M next event  L lockstep";
+        legend.textContent = "P pause  N step  M next event";
         traceBox.appendChild(legend);
 
         this.traceLog = document.createElement("div");
@@ -290,8 +275,7 @@ class JevPanel {
         document.body.appendChild(this.root);
     }
 
-    // one fixed-order list of options with a mini bar and a probability each,
-    // used by both the maneuver and the read section
+    // one fixed-order list of options with a mini bar and a probability each
     makeOptionList(options, nodes) {
         let list = document.createElement("div");
         list.className = "jev-read";
@@ -302,7 +286,7 @@ class JevPanel {
 
             let name = document.createElement("span");
             name.className = "jev-read-name";
-            name.textContent = option.split("_").join(" ");
+            name.textContent = option;
 
             let mini = document.createElement("span");
             mini.className = "jev-mini";
@@ -393,12 +377,11 @@ class JevPanel {
         });
     }
 
-    planText(plan) {
-        if (plan == null || !(plan.hopsRemaining > 0)) return "plan: none";
+    appliedText(applied) {
+        if (applied == null || applied.choice == null) return "last applied: none";
 
-        let hops = plan.hopsRemaining + (plan.hopsRemaining === 1 ? " hop left" : " hops left");
-        let frames = plan.nextHopIn + (plan.nextHopIn === 1 ? " frame" : " frames");
-        return "plan: " + hops + ", next in " + frames;
+        return "last applied: " + applied.choice + " #" + applied.reqId +
+            ", " + applied.lateBy + "f late";
     }
 
     update(view) {
@@ -411,30 +394,26 @@ class JevPanel {
         }
 
         //#region scene fields
-        let fields = view.fields;
+        let described = view.described || {};
+        let fields = described.fields;
+
+        this.setText("described", this.describedLabel,
+            "described (at +" + (described.leadFrames != null ? described.leadFrames : 0) + "f)");
+
         JEV_SCENE_ROWS.forEach(row => {
-            let value = (fields != null && fields[row.key] != null) ? fields[row.key] : "-";
+            let value = (fields != null && fields[row.key] != null) ? String(fields[row.key]) : "-";
             this.setText("f:" + row.key, this.fieldNodes[row.key], value);
         });
         //#endregion
 
-        //#region maneuver
-        this.updateOptionList("mv", JEV_MANEUVER_OPTIONS, this.maneuverNodes, view.maneuver);
-        this.setText("plan", this.planLabel, this.planText(view.plan));
-        //#endregion
+        //#region decision
+        this.updateOptionList("d", JEV_DECISION_OPTIONS, this.decisionNodes, view.decision);
 
-        //#region read
-        this.updateOptionList("r", JEV_READ_OPTIONS, this.readNodes, view.read);
-        //#endregion
+        let confidence = (view.decision != null && typeof view.decision.confidence === "number") ?
+            view.decision.confidence.toFixed(2) : "-";
+        this.setText("confidence", this.confidenceLabel, "confidence " + confidence);
 
-        //#region danger
-        let score = (view.danger != null && typeof view.danger.score === "number") ? view.danger.score : null;
-        if (score == null) {
-            this.setText("danger", this.dangerLabel, "-");
-        } else {
-            let level = Math.max(0, Math.min(JEV_DANGER_LEVELS.length - 1, Math.round(score)));
-            this.setText("danger", this.dangerLabel, score.toFixed(1) + " / 3  " + JEV_DANGER_LEVELS[level]);
-        }
+        this.setText("applied", this.appliedLabel, this.appliedText(view.lastApplied));
         //#endregion
 
         //#region meta

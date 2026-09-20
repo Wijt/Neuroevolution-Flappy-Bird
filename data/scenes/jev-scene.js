@@ -2,26 +2,41 @@
 // uses whatever came back, so a slow request costs a few frames of staleness
 // instead of a freeze. Code only describes the scene, Jev decides.
 //
-// Jev is not asked "flap right now?" anymore. One hop is worth about 45 px and the
-// round trip costs ~17 frames, so a per-frame yes/no could never climb. Jev picks a
-// maneuver instead and the scene spends it as a little hop plan.
+// v2 is a straight question again: FLAP or WAIT. That only works because the scene
+// no longer asks about now, it asks about later. The round trip is 350-650 ms, so
+// every request describes the world as it will be when the answer lands (the bird
+// left alone, the pipes scrolled on) and the answer carries the frame it belongs to.
+// It is applied on that frame, not on arrival.
 //
-// The debug mode on top of that: a warm start that holds the world still until the
-// first answer is in, P/N/M/L to pause, step and lockstep, and a trace log in the
-// same JSONL shape the offline harness writes, so a browser flight and a headless
-// one can be read side by side.
-// Slow game time: the round trip is 390-650 ms, which is 23-40 draw frames, and the bird
-// free-falls from the centre to the ground in 45 of them. So the jev world moves in smaller
-// steps than the other scenes: same visuals, same 60 fps drawing, the physics just advance
-// by a fraction of a frame each draw. An answer that took 30 draw frames is then only 10
-// frames of game time old.
+// The cadence is wall clock, not frame based: one request every JEV_TICK_MS with up
+// to JEV_MAX_IN_FLIGHT of them in the air. Answers overtake each other all the time,
+// which is fine: the tag says which flight and which flap era an answer was asked in,
+// and anything from an older era is dropped instead of steering a bird that already moved.
+//
+// Slow game time is still here: the jev world advances by a fraction of a frame per
+// draw, so the same 60 fps drawing costs Jev fewer game frames per round trip.
 const JEV_TIME_SCALE = 4; // the jev world runs this many times slower than the other scenes
 
 //one draw frame is worth this much game time
 const JEV_DT = 1 / JEV_TIME_SCALE;
 
-//the tick is in game frames, everything the scene counts is in draw frames
-const JEV_TICK_EVERY = 5;
+//#region loop constants
+//the cadence is wall clock: one request every this many ms, however fast the frames go
+const JEV_TICK_MS = 100;
+
+//how many requests may be in the air at once
+const JEV_MAX_IN_FLIGHT = 8;
+
+//an answer that missed its frame by more than this is thrown away instead of applied
+const JEV_LATE_FRAMES = 6;
+
+//the lead is an EMA of the measured latency, so a slow network widens the prediction
+const JEV_LEAD_ALPHA = 0.3;
+const JEV_LEAD_START_MS = 400;
+
+//draw frames are 60 fps: the lead is measured in ms and spent in frames
+const JEV_FRAME_MS = 1000 / 60; // starting guess, the scene measures the real frame time
+//#endregion
 
 //the trace is a debugging aid, not a recording; the oldest lines fall off
 const JEV_TRACE_MAX = 2000;
@@ -29,20 +44,19 @@ const JEV_TRACE_MAX = 2000;
 //how many frames one M press is allowed to burn before it gives up
 const JEV_STEP_BUDGET = 600;
 
-//P N M L, read off keyCode so no other scene ever sees them
+//P N M, read off keyCode so no other scene ever sees them
 const JEV_KEY_PAUSE = 80;
 const JEV_KEY_STEP = 78;
 const JEV_KEY_NEXT_EVENT = 77;
-const JEV_KEY_LOCKSTEP = 76;
 
 //the trace keeps the same two decimals the harness writes, nothing more
 function jevRound2(n) {
     return Math.round(n * 100) / 100;
 }
 
-//game frames are a third of a draw frame apart, one decimal says everything
-function jevRound1(n) {
-    return Math.round(n * 10) / 10;
+//one clock for the cadence; a browser without performance.now() still works
+function jevNow() {
+    return (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
 }
 
 class JevScene extends Scene {
@@ -58,23 +72,29 @@ class JevScene extends Scene {
         this.returnToMenuButton;
 
         // the client outlives a single run so the token counters are per session
-        this.client = new JevClient({ endpoint: "/api/jev", maxInFlight: 2, timeoutMs: 4000 });
+        this.client = new JevClient({ endpoint: "/api/jev", maxInFlight: JEV_MAX_IN_FLIGHT, timeoutMs: 4000 });
         this.panel = null;
 
         this.frame = 0;
-        //the same clock in game time, so the cadence can be read in game frames
-        this.gameFrame = 0;
         this.runId = 0;
+
+        //bumped on every flap: an answer asked before the last flap is about a bird that moved
+        this.flapSeq = 0;
         this.framesSinceFlap = 999;
-        this.lastTickFrame = 0;
 
-        //the hop plan: how many flaps are still owed and when the next one is due
-        this.hopsRemaining = 0;
-        this.nextHopFrame = 0;
+        //wall clock of the last request that actually went out
+        this.lastSendMs = 0;
 
-        this.lastDescription = null;
-        this.lastFields = null;
-        this.lastAnswers = null;
+        //the lead survives a restart, it is a property of the network and not of the flight
+        this.leadMs = JEV_LEAD_START_MS;
+
+        //answers that are waiting for their frame
+        this.held = [];
+
+        //what the panel shows: the last description we sent and the last answer we spent
+        this.lastSentFields = null;
+        this.lastSentLead = 0;
+        this.lastApplied = null;
 
         this.abortedOnDeath = false;
 
@@ -84,15 +104,11 @@ class JevScene extends Scene {
 
         this.paused = false;
 
-        //lockstep is sticky across runs on purpose, it is a mode you switch into
-        this.lockstep = false;
-        this.lockstepFrozen = false;
-
         //the trace survives restarts, every run just appends a new header
         this.trace = [];
         this.traceSeq = 0;
 
-        //anything worth stopping M at: a send, a drained answer, a hop, a death
+        //anything worth stopping M at: a send, a drained answer, an apply, a flap, a death
         this.events = 0;
         //#endregion
     }
@@ -143,35 +159,29 @@ class JevScene extends Scene {
         this.nextPipe = null;
 
         this.frame = 0;
-        this.gameFrame = 0;
         this.runId++;
+        this.flapSeq = 0;
         this.framesSinceFlap = 999;
-        this.lastTickFrame = -JEV_TICK_EVERY * JEV_TIME_SCALE;
 
-        this.hopsRemaining = 0;
-        this.nextHopFrame = 0;
-
-        this.lastDescription = null;
-        this.lastFields = null;
-        this.lastAnswers = null;
+        this.held = [];
+        this.lastSentFields = null;
+        this.lastSentLead = 0;
+        this.lastApplied = null;
 
         this.abortedOnDeath = false;
 
         this.paused = false;
-        this.lockstepFrozen = false;
 
         this.gameStarted = true;
 
         this.writeTrace({
             t: "header",
+            version: 2,
             runId: this.runId,
-            lockstep: this.lockstep,
-            warmStart: true,
-            tick: JEV_TICK_EVERY,
+            tickMs: JEV_TICK_MS,
+            maxInFlight: JEV_MAX_IN_FLIGHT,
+            lateFrames: JEV_LATE_FRAMES,
             timeScale: JEV_TIME_SCALE,
-            maxInFlight: this.lockstep ? 1 : this.client.maxInFlight,
-            height: height,
-            width: width,
             translator: JevTranslator.VERSION
         });
 
@@ -180,16 +190,15 @@ class JevScene extends Scene {
 
     // Frame 0: describe the opening scene and hold everything still until the
     // answer lands. A cold connection costs 700-850 ms and the bird falls from
-    // height/2 to the ground in 46 frames, so taking off blind is taking off dead.
+    // height/2 to the ground in a few dozen frames, so taking off blind is taking
+    // off dead. The warm start asks about now (lead 0), because a frozen world is
+    // not going anywhere and predicting it forward would only be a lie.
     beginWarmStart() {
         this.waitingForPilot = true;
 
         this.nextPipe = this.selectNextPipe();
-        this.lastDescription = this.buildDescription();
-        this.lastFields = this.lastDescription != null ? this.lastDescription.fields : null;
 
-        //the warm start eats the first tick, the answer is fresh on frame 1
-        if (this.sendNow()) this.lastTickFrame = this.frame;
+        if (this.sendNow(0)) this.lastSendMs = jevNow();
     }
 
     update() {
@@ -198,15 +207,14 @@ class JevScene extends Scene {
         if (!this.gameStarted) return;
 
         if (this.waitingForPilot) {
-            this.drainAnswers(); //clears the flag as soon as a plan is in
+            this.drainAnswers();
+            //a first answer ends the warm start, whatever it says
+            if (this.applyHeld() > 0) this.waitingForPilot = false;
             if (this.waitingForPilot) this.retryWarmStart();
             return;
         }
 
         if (this.paused) return;
-
-        //lockstep: the world holds still from the send until the answer is drained
-        if (this.lockstepFrozen && this.thawLockstep()) return;
 
         this.stepFrame();
     }
@@ -219,19 +227,10 @@ class JevScene extends Scene {
         }
 
         this.frame++;
-        this.gameFrame = this.frame * JEV_DT;
+        this.noteFrameTime();
 
         this.drainAnswers();
-
-        //spend the plan: a hop now, the rest one every HOP_SPACING_FRAMES game frames
-        if (this.hopsRemaining > 0 && this.frame >= this.nextHopFrame) {
-            this.doFlap();
-            this.hopsRemaining--;
-            this.nextHopFrame = this.frame + JevQuestions.HOP_SPACING_FRAMES * JEV_TIME_SCALE;
-
-            this.writeTrace({ t: "hop", frame: this.frame, gameFrame: jevRound1(this.gameFrame), hopsLeft: this.hopsRemaining });
-            this.events++;
-        }
+        this.applyHeld();
 
         this.framesSinceFlap++;
 
@@ -274,9 +273,6 @@ class JevScene extends Scene {
             if (cause == null) cause = "ceiling";
         }
 
-        this.lastDescription = this.buildDescription();
-        this.lastFields = this.lastDescription != null ? this.lastDescription.fields : null;
-
         if (!this.bird.live) {
             this.noteDeath(cause);
             return;
@@ -285,15 +281,14 @@ class JevScene extends Scene {
         this.maybeSend();
     }
 
-    //the only place that flaps
+    //the only place that flaps; the era counter is what makes old answers droppable
     doFlap() {
         this.bird.jump();
+        this.flapSeq++;
         this.framesSinceFlap = 0;
-    }
 
-    clearPlan() {
-        this.hopsRemaining = 0;
-        this.nextHopFrame = 0;
+        this.writeTrace({ t: "flap", frame: this.frame });
+        this.events++;
     }
 
     selectNextPipe() {
@@ -307,136 +302,95 @@ class JevScene extends Scene {
         this.writeTrace({
             t: "death",
             frame: this.frame,
-            gameFrame: jevRound1(this.gameFrame),
             cause: cause,
             score: this.bird.score,
             birdY: jevRound2(this.bird.pos.y),
-            gapCenter: this.nextPipe != null ? this.nextPipe.pos.y : null,
-            pipeX1: this.nextPipe != null ? this.nextPipe.topPipe.x1 : null
+            gapTop: this.nextPipe != null ? jevRound2(this.nextPipe.topPipe.y2) : null,
+            gapBottom: this.nextPipe != null ? jevRound2(this.nextPipe.bottomPipe.y1) : null,
+            pipeX1: this.nextPipe != null ? jevRound2(this.nextPipe.topPipe.x1) : null
         });
         this.events++;
 
         this.client.abortAll(); //no calls while dead
-        this.clearPlan();
-        this.lockstepFrozen = false;
+        this.held = [];
     }
 
-    buildDescription() {
-        if (this.nextPipe == null) return null;
-
-        let followingPipe = this.pipes[this.pipes.indexOf(this.nextPipe) + 1];
-
-        return JevTranslator.describeScene({
+    //#region asking
+    //everything the translator needs, straight off the world; it picks the pipe itself
+    buildInput() {
+        return {
             birdX: this.bird.pos.x,
             birdY: this.bird.pos.y,
             birdVelocity: this.bird.velocity,
             birdRadius: JEV_COLLISION_R,
-            //the translator's buckets are written in game frames, so hand it game frames
-            framesSinceFlap: this.framesSinceFlap * JEV_DT,
-            nextPipe: {
-                x1: this.nextPipe.topPipe.x1,
-                x2: this.nextPipe.topPipe.x2,
-                gapCenter: this.nextPipe.pos.y
-            },
-            followingPipe: followingPipe != null ? { gapCenter: followingPipe.pos.y } : null,
             groundY: height - GROUND_HEIGHT,
-            canvasHeight: height
-        });
+            pipes: this.pipes.map(pipe => ({
+                x1: pipe.topPipe.x1,
+                x2: pipe.topPipe.x2,
+                gapTop: pipe.topPipe.y2,
+                gapBottom: pipe.bottomPipe.y1
+            }))
+        };
     }
 
-    //returns how many answers were actually applied, the step keys look at that
-    drainAnswers() {
-        let applied = 0;
-        let message = this.client.takeAnswer();
-        while (message != null) {
-            let tag = message.tag || {};
-            //only an answer about a flight that is already over is worthless
-            if (tag.runId !== this.runId) {
-                this.client.stats.discarded++;
-            } else {
-                this.lastAnswers = message.answers;
-
-                //a newer answer replaces what is left of the old plan, that is the freshness rule now
-                let maneuver = message.answers.maneuver;
-                let choice = maneuver != null ? maneuver.choice : null;
-                let hops = JevQuestions.HOPS[choice];
-                this.hopsRemaining = (typeof hops === "number") ? hops : 0;
-                this.nextHopFrame = this.frame; //so the first hop lands this frame
-
-                this.noteAnswer(message, choice);
-
-                applied++;
-                //a plan is in: the warm start is over and lockstep may run again
-                this.waitingForPilot = false;
-                this.lockstepFrozen = false;
-            }
-            message = this.client.takeAnswer();
-        }
-        return applied;
+    //how far ahead the answer to a request sent right now will land, in real frames.
+    //the frame time is measured (p5 deltaTime) so a fast or slow display does not
+    //turn the lead into the wrong number of frames
+    leadFrames() {
+        return Math.round(this.leadMs / (this.frameMs || JEV_FRAME_MS));
     }
 
-    noteAnswer(message, choice) {
-        let tag = message.tag || {};
-        let maneuver = message.answers.maneuver || {};
-        let read = message.answers.read || null;
-        let danger = message.answers.danger || null;
-
-        this.writeTrace({
-            t: "recv",
-            frame: this.frame,
-            gameFrame: jevRound1(this.gameFrame),
-            reqId: message.reqId,
-            sentFrame: tag.frame,
-            latencyMs: message.latencyMs,
-            choice: choice,
-            probs: maneuver.probabilities || null,
-            danger: (danger != null && danger.score !== undefined) ? danger.score : null,
-            read: (read != null && read.choice !== undefined) ? read.choice : null,
-            birdY: jevRound2(this.bird.pos.y),
-            vel: jevRound2(this.bird.velocity)
-        });
-        this.events++;
+    noteFrameTime() {
+        let dt = (typeof deltaTime === "number" && deltaTime > 4 && deltaTime < 100) ? deltaTime : JEV_FRAME_MS;
+        this.frameMs = this.frameMs ? this.frameMs * 0.9 + dt * 0.1 : dt;
     }
 
     maybeSend() {
         if (!this.bird.live) return;
         if (this.sceneManager.getActiveScene() !== this) return;
         if (document.visibilityState !== "visible") return;
-        if (this.lastDescription == null) return;
-        if (this.frame - this.lastTickFrame < JEV_TICK_EVERY * JEV_TIME_SCALE) return;
+        if (jevNow() - this.lastSendMs < JEV_TICK_MS) return;
+        if (this.client.inFlight >= JEV_MAX_IN_FLIGHT) return;
         if (!this.client.canSend()) return;
-        //lockstep means one request at a time, no matter what maxInFlight says
-        if (this.lockstep && this.client.inFlight > 0) return;
 
         //a skipped send must not eat the tick
-        if (this.sendNow()) this.lastTickFrame = this.frame;
+        if (this.sendNow(this.leadFrames())) this.lastSendMs = jevNow();
     }
 
-    //the single door out: every request is traced and freezes lockstep here
-    sendNow() {
-        if (this.lastDescription == null) return 0;
+    //the single door out: every request is described, tagged and traced here
+    sendNow(leadFrames) {
+        let description = JevTranslator.describeScene(this.buildInput(), leadFrames, JEV_DT);
+        if (description == null) return 0;
 
-        let reqId = this.client.send(this.lastDescription.state, JevQuestions.build(), {
+        let targetFrame = this.frame + leadFrames;
+
+        let reqId = this.client.send(description.state, JevQuestions.build(), {
             runId: this.runId,
-            frame: this.frame
+            flapSeq: this.flapSeq,
+            sentFrame: this.frame,
+            targetFrame: targetFrame
         });
 
         if (!reqId) return 0;
 
+        this.lastSentFields = description.fields;
+        this.lastSentLead = leadFrames;
+
         this.writeTrace({
             t: "send",
             frame: this.frame,
-            gameFrame: jevRound1(this.gameFrame),
             reqId: reqId,
-            state: this.lastFields,
-            birdY: jevRound2(this.bird.pos.y),
-            vel: jevRound2(this.bird.velocity),
-            gapCenter: this.nextPipe != null ? this.nextPipe.pos.y : null,
-            pipeX1: this.nextPipe != null ? this.nextPipe.topPipe.x1 : null
+            targetFrame: targetFrame,
+            leadFrames: leadFrames,
+            leadMs: Math.round(this.leadMs),
+            fields: description.fields,
+            actual: {
+                birdY: jevRound2(this.bird.pos.y),
+                vel: jevRound2(this.bird.velocity),
+                pipeX1: this.nextPipe != null ? jevRound2(this.nextPipe.topPipe.x1) : null
+            }
         });
         this.events++;
-
-        if (this.lockstep) this.lockstepFrozen = true;
 
         return reqId;
     }
@@ -449,42 +403,144 @@ class JevScene extends Scene {
         if (this.sceneManager.getActiveScene() !== this) return;
         if (document.visibilityState !== "visible") return;
 
-        this.sendNow();
+        this.sendNow(0);
     }
+    //#endregion
+
+    //#region answering
+    // Empty the inbox. An answer is measured first (it teaches the lead), then either
+    // dropped for being about another flight or another flap era, or held until the
+    // frame it was asked about comes around.
+    drainAnswers() {
+        let message = this.client.takeAnswer();
+        while (message != null) {
+            let tag = message.tag || {};
+
+            //every answer measures the network, even the ones we throw away
+            this.leadMs = this.leadMs + JEV_LEAD_ALPHA * (message.latencyMs - this.leadMs);
+
+            let decision = (message.answers && message.answers.decision) ? message.answers.decision : {};
+            let outcome;
+
+            if (tag.runId !== this.runId) {
+                outcome = "discarded";
+                this.client.stats.discarded++;
+            } else if (tag.flapSeq !== this.flapSeq) {
+                //the bird flapped after we asked, so this is about a bird that no longer exists
+                outcome = "superseded";
+                this.client.stats.superseded++;
+            } else {
+                outcome = "held";
+                this.client.stats.held++;
+                this.held.push({
+                    reqId: message.reqId,
+                    targetFrame: tag.targetFrame,
+                    choice: decision.choice,
+                    confidence: decision.confidence,
+                    probabilities: decision.probabilities
+                });
+            }
+
+            this.writeTrace({
+                t: "recv",
+                frame: this.frame,
+                reqId: message.reqId,
+                latencyMs: message.latencyMs,
+                choice: decision.choice != null ? decision.choice : null,
+                probs: decision.probabilities || null,
+                confidence: decision.confidence != null ? decision.confidence : null,
+                outcome: outcome
+            });
+            this.events++;
+
+            message = this.client.takeAnswer();
+        }
+    }
+
+    // Spend whatever is due this frame, oldest target first. A FLAP ends the pass:
+    // everything still held was asked about the era that just ended.
+    // Returns how many answers were applied, the warm start and the step keys look at that.
+    applyHeld() {
+        if (this.held.length === 0) return 0;
+
+        this.held.sort((a, b) => a.targetFrame - b.targetFrame);
+
+        let applied = 0;
+
+        while (this.held.length > 0) {
+            let answer = this.held[0];
+            if (answer.targetFrame > this.frame) break;
+
+            this.held.shift();
+
+            let lateBy = this.frame - answer.targetFrame;
+
+            //too late to be about this bird any more
+            if (lateBy > JEV_LATE_FRAMES) {
+                this.client.stats.stale++;
+                this.writeTrace({
+                    t: "stale",
+                    frame: this.frame,
+                    reqId: answer.reqId,
+                    targetFrame: answer.targetFrame
+                });
+                this.events++;
+                continue;
+            }
+
+            this.client.stats.applied++;
+            applied++;
+            this.lastApplied = {
+                reqId: answer.reqId,
+                choice: answer.choice,
+                confidence: answer.confidence,
+                probabilities: answer.probabilities,
+                lateBy: lateBy
+            };
+
+            this.writeTrace({
+                t: "apply",
+                frame: this.frame,
+                reqId: answer.reqId,
+                targetFrame: answer.targetFrame,
+                choice: answer.choice,
+                lateBy: lateBy
+            });
+            this.events++;
+
+            //WAIT costs nothing, FLAP moves the bird and ends the era
+            if (answer.choice === JevQuestions.FLAP) {
+                this.doFlap();
+                this.supersedeHeld();
+                break;
+            }
+        }
+
+        return applied;
+    }
+
+    //the flap moved the bird, so nothing that was asked before it is worth spending
+    supersedeHeld() {
+        this.client.stats.superseded += this.held.length;
+        this.held = [];
+    }
+    //#endregion
 
     //#region debug keys
     togglePause() {
         this.paused = !this.paused;
     }
 
-    toggleLockstep() {
-        this.lockstep = !this.lockstep;
-        //leaving the mode must not leave the world frozen behind
-        if (!this.lockstep) this.lockstepFrozen = false;
-    }
-
-    // Drain whatever is in, and let the flight go again if there is nothing
-    // left to wait for: an errored request never answers and must not freeze
-    // the world for good. Returns true while the freeze still holds.
-    thawLockstep() {
-        this.drainAnswers();
-
-        if (this.lockstepFrozen && this.client.inFlight === 0) this.lockstepFrozen = false;
-
-        return this.lockstepFrozen;
-    }
-
-    // N: exactly one frame. While the world is frozen for another reason the
-    // only thing that can move is an answer landing, so try that instead.
+    // N: exactly one frame. While the warm start holds the world the only thing
+    // that can move is an answer landing, so try that instead.
     manualStep() {
         if (this.bird == null || !this.bird.live) return;
 
         if (this.waitingForPilot) {
             this.drainAnswers();
+            if (this.applyHeld() > 0) this.waitingForPilot = false;
             return;
         }
-
-        if (this.lockstepFrozen && this.thawLockstep()) return;
 
         this.stepFrame();
     }
@@ -498,7 +554,7 @@ class JevScene extends Scene {
             this.manualStep();
             if (this.events !== before) return;
             if (this.bird == null || !this.bird.live) return;
-            if (this.waitingForPilot || this.lockstepFrozen) return;
+            if (this.waitingForPilot) return;
         }
     }
     //#endregion
@@ -525,29 +581,34 @@ class JevScene extends Scene {
         if (!this.bird.live) status = "dead";
         else if (this.waitingForPilot) status = "waiting";
         else if (this.paused) status = "paused";
-        else if (this.lockstepFrozen) status = "lockstep";
         else if (document.visibilityState !== "visible") status = "hidden";
         else if (Date.now() < this.client.backoffUntilMs) status = "backoff";
 
-        let answers = this.lastAnswers || {};
         let stats = this.client.stats;
+        let applied = this.lastApplied;
 
         return {
             status: status,
-            fields: this.lastFields,
-            maneuver: answers.maneuver || null,
-            plan: {
-                hopsRemaining: this.hopsRemaining,
-                nextHopIn: Math.max(0, this.nextHopFrame - this.frame)
+            described: {
+                fields: this.lastSentFields,
+                leadFrames: this.lastSentLead
             },
-            read: answers.read || null,
-            danger: answers.danger || null,
+            decision: applied != null ? {
+                choice: applied.choice,
+                confidence: applied.confidence,
+                probabilities: applied.probabilities
+            } : null,
+            lastApplied: applied,
             meta: {
-                inFlight: this.client.inFlight + " / " + (this.lockstep ? 1 : this.client.maxInFlight),
-                requests: stats.requests + " sent, " + stats.answers + " back",
+                inFlight: this.client.inFlight + " / " + JEV_MAX_IN_FLIGHT,
+                sent: stats.requests,
+                applied: stats.applied,
+                superseded: stats.superseded + (stats.discarded > 0 ? " (+" + stats.discarded + " old run)" : ""),
+                stale: stats.stale,
+                lead: Math.round(this.leadMs) + " ms (" + this.leadFrames() + "f)",
+                latency: stats.lastLatencyMs + " ms, upstream " +
+                    (stats.lastUpstreamMs != null ? stats.lastUpstreamMs + " ms" : "-"),
                 tokens: stats.inputTokens + " in, " + stats.outputTokens + " out",
-                latency: stats.lastLatencyMs + " ms",
-                discarded: stats.discarded,
                 errors: stats.errors + (stats.lastError != null ? " (" + stats.lastError + ")" : ""),
                 speed: "1/" + JEV_TIME_SCALE + " (jev world)"
             },
@@ -634,10 +695,6 @@ class JevScene extends Scene {
             this.togglePause();
             return;
         }
-        if (keyCode === JEV_KEY_LOCKSTEP) {
-            this.toggleLockstep();
-            return;
-        }
         if (this.paused && keyCode === JEV_KEY_STEP) {
             this.manualStep();
             return;
@@ -659,7 +716,7 @@ class JevScene extends Scene {
 
         this.waitingForPilot = false;
         this.paused = false;
-        this.lockstepFrozen = false;
+        this.held = [];
 
         if (this.returnToMenuButton != null) {
             this.returnToMenuButton.remove();
@@ -705,7 +762,7 @@ class JevPipe extends Pipe {
             y2: this.pos.y - this.gapH/2
         };
         this.bottomPipe = {
-            x1: this.pos.x - this.width/2, 
+            x1: this.pos.x - this.width/2,
             y1: this.pos.y + this.gapH/2,
             x2: this.pos.x + this.width/2,
             y2: height

@@ -1,31 +1,37 @@
 "use strict";
 
 /*
- * Headless flight simulator for the Jev pilot.
+ * Headless flight simulator for the Jev pilot, v2.
  *
- * Runs the JevScene loop without p5 and without a browser: a fixed 60 fps
- * timeline, the real physics from data/flappybird/*, the real scene
- * translator, and real asynchronous calls to TypeSafe's System One endpoint.
- * The loop never waits for an answer, exactly like the game: a request is
- * fired, the frames keep ticking, and the answer is drained at the top of
- * whichever frame it happens to arrive on.
+ * Runs the JevScene loop without p5 and without a browser: a real-time 60 fps
+ * timeline, the real physics from data/flappybird/*, the real v2 scene
+ * translator and the real v2 question set. The loop never waits for an answer:
+ * a request is fired on a wall-clock cadence, the frames keep ticking, and the
+ * answer is drained at the top of whichever frame it happens to arrive on.
+ *
+ * The v2 contract moves the latency problem from the game into the request.
+ * Instead of asking "what should the bird do now" and acting on the answer
+ * however late it lands, the harness predicts the world `leadFrames` ahead --
+ * with the bird left alone -- describes THAT world, and holds the answer until
+ * the frame it was about (targetFrame). Lead is an EMA of measured latency, so
+ * the pilot answers about the moment its answer will arrive.
  *
  *   node harness/simulate.js [--mock] [--seed=N] [--runs=N] [--max-frames=N]
- *                            [--tick=N] [--max-in-flight=N] [--no-warm-start]
- *                            [--lockstep] [--tick-lockstep=N]
+ *                            [--tick-ms=N] [--max-in-flight=N] [--late-frames=N]
+ *                            [--lead-ms=N] [--no-lead] [--time-scale=N]
  *                            [--height=N] [--width=N] [--quiet]
  *
- * The pilot is warm started by default: one request describes the opening
- * scene and the world is held still until that answer lands, so a cold first
- * call cannot drop the bird before it has a pilot. --lockstep goes further and
- * freezes the world for every request, which takes latency out of the picture
- * entirely and leaves only the quality of the description under test.
+ * An answer is only good for the world it described, so it is thrown away when
+ * the bird flapped after the question was asked (superseded), and when it turns
+ * up more than --late-frames after its targetFrame (stale).
  *
- * --mock swaps the transport for a local fake (380 ms, trivial policy) so the
- * whole pipeline can be exercised without a key.
+ * --mock swaps the transport for a local fake (350 +-50 ms, a policy that
+ * mirrors the FLAP criterion) so the whole pipeline can be exercised without a
+ * key. Every run writes a JSONL trace under <os tmpdir>/flappy-jev-sim/.
  *
- * Every run writes a JSONL trace under <os tmpdir>/flappy-jev-sim/ and prints
- * its path.
+ * The `send` timeline line shows the PREDICTED scene (y, v, position, motion,
+ * distance) -- that is what Jev is being asked about. The trace keeps the
+ * unpredicted numbers beside it under `actual`.
  *
  * Exit codes: 0 ran, 2 config/transport failure.
  */
@@ -62,15 +68,14 @@ const ENDPOINT = "https://api.typesafe.ai/v1/systemone";
 const MODEL = "jev-latest";
 const REQUEST_TIMEOUT_MS = 10000;
 
-const MOCK_LATENCY_MS = 380;
+const MOCK_LATENCY_MS = 350;
+const MOCK_JITTER_MS = 50;
 
-const MANEUVERS = ["let_it_fall", "one_hop", "two_hops", "climb_hard"];
-const SHORT = {
-    let_it_fall: "fall",
-    one_hop: "1hop",
-    two_hops: "2hop",
-    climb_hard: "climb"
-};
+const LEAD_ALPHA = 0.3;
+const LEAD_INITIAL_MS = 400;
+
+const FLAP = JevQuestions.FLAP;
+const WAIT = JevQuestions.WAIT;
 
 /* ------------------------------------------------------------------- args */
 
@@ -81,11 +86,11 @@ function parseArgs(argv) {
         seed: 1,
         runs: 1,
         maxFrames: 3600,
-        tick: 9,
-        tickLockstep: null,
-        maxInFlight: 2,
-        warmStart: true,
-        lockstep: false,
+        tickMs: 100,
+        maxInFlight: 8,
+        lateFrames: 6,
+        leadMs: null,
+        noLead: false,
         timeScale: 1,
         height: DEFAULT_HEIGHT,
         width: null
@@ -95,9 +100,10 @@ function parseArgs(argv) {
         "--seed": "seed",
         "--runs": "runs",
         "--max-frames": "maxFrames",
-        "--tick": "tick",
-        "--tick-lockstep": "tickLockstep",
+        "--tick-ms": "tickMs",
         "--max-in-flight": "maxInFlight",
+        "--late-frames": "lateFrames",
+        "--lead-ms": "leadMs",
         "--time-scale": "timeScale",
         "--height": "height",
         "--width": "width"
@@ -114,12 +120,8 @@ function parseArgs(argv) {
             opts.quiet = true;
             continue;
         }
-        if (arg === "--no-warm-start") {
-            opts.warmStart = false;
-            continue;
-        }
-        if (arg === "--lockstep") {
-            opts.lockstep = true;
+        if (arg === "--no-lead") {
+            opts.noLead = true;
             continue;
         }
 
@@ -152,13 +154,13 @@ function parseArgs(argv) {
 
     if (opts.width === null) opts.width = Math.round(opts.height * 9 / 16);
     if (opts.runs < 1) opts.runs = 1;
-    if (opts.tick < 1) opts.tick = 1;
-    if (opts.tickLockstep === null) opts.tickLockstep = opts.tick;
-    if (opts.tickLockstep < 1) opts.tickLockstep = 1;
+    if (opts.tickMs < 1) opts.tickMs = 1;
     if (opts.maxInFlight < 1) opts.maxInFlight = 1;
     if (!(opts.timeScale >= 1)) opts.timeScale = 1;
-    // a frozen world can only ever have one request outstanding
-    if (opts.lockstep) opts.maxInFlight = 1;
+
+    if (opts.noLead) opts.leadMode = "none";
+    else if (opts.leadMs !== null) opts.leadMode = "fixed";
+    else opts.leadMode = "ema";
 
     return opts;
 }
@@ -213,22 +215,11 @@ function frameTag(frame) {
     return "f" + s;
 }
 
-function signed(n) {
-    const r = Math.round(n);
-    return (r >= 0 ? "+" : "") + r;
-}
-
 function prob(p) {
     const n = Number(p);
     if (!Number.isFinite(n)) return " n/a";
     const text = n.toFixed(2);
     return text.charAt(0) === "0" ? text.slice(1) : text;
-}
-
-function formatProbs(probabilities) {
-    return "[" + MANEUVERS.map(function (m) {
-        return SHORT[m] + " " + prob(probabilities && probabilities[m]);
-    }).join(" ") + "]";
 }
 
 function round2(n) {
@@ -331,8 +322,25 @@ function circleRect(bird, rectV) {
 }
 
 /* ------------------------------------------------------------- transports */
+// A transport resolves { body, modelMs }. modelMs is the upstream service time
+// reported by the edge when it bothers to tell us.
+
+// Every request to TypeSafe costs one round trip on a warm connection and three
+// on a cold one (DNS + TCP + TLS). Node drops idle sockets after 4 s, so without
+// a long-lived dispatcher a cadence of one request per 100 ms would still pay
+// the cold price now and then. Same numbers as server/server.js.
+function makeDispatcher() {
+    const { Agent } = require("undici");
+    return new Agent({
+        keepAliveTimeout: 60 * 1000,
+        keepAliveMaxTimeout: 10 * 60 * 1000,
+        connections: 4
+    });
+}
 
 function realTransport(apiKey) {
+    const dispatcher = makeDispatcher();
+
     return async function (state, questions, signal) {
         const response = await fetch(ENDPOINT, {
             method: "POST",
@@ -345,8 +353,12 @@ function realTransport(apiKey) {
                 model: MODEL,
                 questions: questions
             }),
-            signal: signal
+            signal: signal,
+            dispatcher: dispatcher
         });
+
+        const rawModelMs = response.headers.get("x-envoy-upstream-service-time");
+        const modelMs = rawModelMs == null ? null : Number.parseInt(rawModelMs, 10);
 
         if (!response.ok) {
             let detail = "";
@@ -358,37 +370,27 @@ function realTransport(apiKey) {
             throw new Error("http " + response.status + " " + detail);
         }
 
-        return response.json();
+        const body = await response.json();
+        return { body: body, modelMs: Number.isFinite(modelMs) ? modelMs : null };
     };
 }
 
-// Trivial but plausible stand-in: read the two phrases a human would read
-// first and pick the obvious maneuver. The ground/ceiling guard comes before
-// the gap, otherwise "far above the opening" flies the bird into the floor
-// while the answer is still in the air.
-function mockChoice(place, around, motion) {
-    // a flap zeroes the velocity, so one hop is enough to arrest a dive
-    const falling = motion === "starting to fall" ||
-        motion === "falling" ||
-        motion === "dropping fast";
+// The mock mirrors the FLAP criterion from jev-questions.js exactly, reading the
+// same two phrases Jev reads. It is not a smarter pilot than Jev, it is the same
+// pilot with no network and no judgement -- which is what makes it useful: any
+// hold / supersede / stale behaviour a mock run shows is the harness, not the
+// model.
+function mockChoice(state) {
+    const bird = (state && state.bird) || {};
+    const position = String(bird.position || "");
+    const motion = String(bird.motion || "");
 
-    if (around.indexOf("ground is close") !== -1) return "climb_hard";
-    if (around.indexOf("ceiling is close") !== -1) return "let_it_fall";
-    if (place.indexOf("below") !== -1) return "climb_hard";
-    // above, or in the middle: fall only while the fall has not started, the
-    // round trip is far too slow to recover from a free fall that is already
-    // under way
-    return falling ? "one_hop" : "let_it_fall";
+    if (position === "below the gap") return FLAP;
+    if (position === "inside the gap, lower half" && motion !== "rising") return FLAP;
+    return WAIT;
 }
 
-function mockDistribution(choice) {
-    const dist = {};
-    for (const m of MANEUVERS) dist[m] = 0.13;
-    dist[choice] = 0.61;
-    return dist;
-}
-
-function mockTransport() {
+function mockTransport(random) {
     return function (state, questions, signal) {
         return new Promise(function (resolve, reject) {
             function onAbort() {
@@ -396,33 +398,32 @@ function mockTransport() {
                 reject(new Error("aborted"));
             }
 
+            const jitter = (random() * 2 - 1) * MOCK_JITTER_MS;
+            const delay = MOCK_LATENCY_MS + jitter;
+
             const timer = setTimeout(function () {
                 if (signal != null) signal.removeEventListener("abort", onAbort);
 
-                const bird = (state && state.bird) || {};
-                const place = String(bird.place_in_gap || "");
-                const around = String(bird.surroundings || "");
-                const motion = String(bird.vertical_motion || "");
-                const choice = mockChoice(place, around, motion);
-
-                let read = "aligned";
-                if (around.indexOf("ground is close") !== -1) read = "ground_danger";
-                else if (around.indexOf("ceiling is close") !== -1) read = "ceiling_danger";
-                else if (place.indexOf("below") !== -1) read = "too_low";
-                else if (place.indexOf("above") !== -1) read = "too_high";
+                const choice = mockChoice(state);
+                const p = 0.91;
+                const probabilities = {};
+                probabilities[FLAP] = choice === FLAP ? p : 1 - p;
+                probabilities[WAIT] = choice === WAIT ? p : 1 - p;
 
                 resolve({
-                    answers: {
-                        maneuver: { choice: choice, probabilities: mockDistribution(choice) },
-                        read: { choice: read, probabilities: null },
-                        danger: {
-                            score: read === "aligned" ? 0.25 : (choice === "climb_hard" ? 0.9 : 0.6),
-                            legend: "mock"
-                        }
+                    body: {
+                        answers: {
+                            decision: {
+                                choice: choice,
+                                confidence: p,
+                                probabilities: probabilities
+                            }
+                        },
+                        usage: { input_tokens: 0, output_tokens: 0 }
                     },
-                    usage: { input_tokens: 0, output_tokens: 0 }
+                    modelMs: null
                 });
-            }, MOCK_LATENCY_MS);
+            }, delay);
 
             if (signal != null) {
                 if (signal.aborted) {
@@ -458,10 +459,8 @@ class SimClient {
             requests: 0,
             answers: 0,
             errors: 0,
-            discarded: 0,
             inputTokens: 0,
             outputTokens: 0,
-            lastLatencyMs: 0,
             lastError: null
         };
 
@@ -504,7 +503,8 @@ class SimClient {
             .then(function () {
                 return self.transport(state, questions, controller.signal);
             })
-            .then(function (body) {
+            .then(function (result) {
+                const body = result != null ? result.body : null;
                 if (body == null || body.answers == null) throw new Error("no answers in the response");
 
                 const usage = body.usage || {};
@@ -515,13 +515,13 @@ class SimClient {
                     tag: tag,
                     answers: body.answers,
                     usage: usage,
-                    latencyMs: latencyMs
+                    latencyMs: latencyMs,
+                    modelMs: result.modelMs != null ? result.modelMs : null
                 });
 
                 self.stats.answers++;
                 self.stats.inputTokens += usage.input_tokens || 0;
                 self.stats.outputTokens += usage.output_tokens || 0;
-                self.stats.lastLatencyMs = latencyMs;
 
                 // a good answer clears the backoff
                 self.backoffStepMs = 0;
@@ -544,7 +544,7 @@ class SimClient {
 
         this.stats.errors++;
         this.stats.lastError = message;
-        this.errorLog.push({ reqId: reqId, frame: tag != null ? tag.frame : null, message: message });
+        this.errorLog.push({ reqId: reqId, frame: tag != null ? tag.sentFrame : null, message: message });
 
         if (this.backoffStepMs === 0) this.backoffStepMs = 1000;
         else this.backoffStepMs = Math.min(this.backoffStepMs * 2, 8000);
@@ -608,45 +608,52 @@ class SimRun {
 
         this.nextPipe = null;
 
-        this.lockstep = opts.lockstep === true;
-        // slow game time: the world runs timeScale times slower, cadence stays in game time
+        // slow game time: the world runs timeScale times slower, the cadence and
+        // the lead stay in wall time because that is where latency lives
         this.timeScale = opts.timeScale;
         this.dt = 1 / this.timeScale;
-        this.tick = (this.lockstep ? opts.tickLockstep : opts.tick) * this.timeScale;
+
+        this.tickMs = opts.tickMs;
+        this.lateFrames = opts.lateFrames;
+        this.leadMode = opts.leadMode;
+        this.leadMs = this.leadMode === "none"
+            ? 0
+            : (this.leadMode === "fixed" ? opts.leadMs : LEAD_INITIAL_MS);
 
         this.frame = 0;
         this.runId = runIndex + 1;
+        this.flapSeq = 0;
         this.framesSinceFlap = 999;
-        this.lastTickFrame = -this.tick;
+        this.lastSendMs = -Infinity;
 
-        this.hopsRemaining = 0;
-        this.nextHopFrame = 0;
-
-        this.lastDescription = null;
-        this.lastFields = null;
+        this.held = [];
 
         // bookkeeping the game itself does not need
-        this.hops = 0;
-        this.flips = 0;
-        this.lastChoice = null;
+        this.flaps = 0;
+        this.applied = 0;
+        this.appliedFlap = 0;
+        this.appliedWait = 0;
+        this.superseded = 0;
+        this.stale = 0;
+        this.discarded = 0;
         this.latenciesMs = [];
         this.latenciesFrames = [];
+        this.modelMsValues = [];
+        this.leadFramesValues = [];
+        this.lateByValues = [];
         this.death = null;
-        this.sentThisFrame = 0;
         this.warmStartMs = null;
 
         this.write({
             t: "header",
+            version: 2,
             seed: seed,
             runId: this.runId,
-            lockstep: this.lockstep,
-            warmStart: opts.warmStart === true,
-            tick: this.tick,
-            timeScale: this.timeScale,
+            tickMs: this.tickMs,
             maxInFlight: opts.maxInFlight,
-            maxFrames: opts.maxFrames,
-            height: this.height,
-            width: this.width,
+            lateFrames: this.lateFrames,
+            timeScale: this.timeScale,
+            leadMode: this.leadMode,
             translator: JevTranslator.VERSION
         });
     }
@@ -659,14 +666,49 @@ class SimRun {
         this.trace.write(JSON.stringify(record) + "\n");
     }
 
-    pipeOffset() {
-        if (this.nextPipe == null) return 0;
-        return this.nextPipe.topPipe.x1 - this.bird.pos.x;
+    /* ------------------------------------------------------------ scene */
+
+    // same selecting criterion as the watch scene, used for collisions/score
+    selectNextPipe() {
+        return this.pipes.filter(function (pipe) {
+            return pipe.bottomPipe.x1 > BIRD_X - (PIPE_WIDTH + BIRD_R);
+        })[0];
     }
 
-    gapCenter() {
-        return this.nextPipe != null ? this.nextPipe.pos.y : null;
+    // the v2 translator takes the whole pipe list and picks the pipe itself
+    pipeList() {
+        return this.pipes.map(function (pipe) {
+            return {
+                x1: pipe.topPipe.x1,
+                x2: pipe.topPipe.x2,
+                gapTop: pipe.topPipe.y2,
+                gapBottom: pipe.bottomPipe.y1
+            };
+        });
     }
+
+    describe(leadFrames) {
+        return JevTranslator.describeScene({
+            birdX: this.bird.pos.x,
+            birdY: this.bird.pos.y,
+            birdVelocity: this.bird.velocity,
+            birdRadius: JEV_COLLISION_R,
+            groundY: this.height - GROUND_HEIGHT,
+            pipes: this.pipeList()
+        }, leadFrames, this.dt);
+    }
+
+    leadFrames() {
+        if (this.leadMode === "none") return 0;
+        return Math.round(this.leadMs / FRAME_MS);
+    }
+
+    noteLatency(latencyMs) {
+        if (this.leadMode !== "ema") return;
+        this.leadMs = (1 - LEAD_ALPHA) * this.leadMs + LEAD_ALPHA * latencyMs;
+    }
+
+    /* ------------------------------------------------------------- loop */
 
     // One tick of JevScene.update(), minus the browser-only guards.
     // Returns false once the flight is over.
@@ -676,18 +718,7 @@ class SimRun {
         if (!this.bird.live) return false;
 
         this.drainAnswers();
-
-        // spend the plan: a hop now, the rest one every HOP_SPACING_FRAMES frames
-        if (this.hopsRemaining > 0 && this.frame >= this.nextHopFrame) {
-            this.bird.jump();
-            this.framesSinceFlap = 0;
-            this.hopsRemaining--;
-            this.nextHopFrame = this.frame + JevQuestions.HOP_SPACING_FRAMES * this.timeScale;
-            this.hops++;
-
-            this.write({ t: "hop", frame: this.frame, hopsLeft: this.hopsRemaining });
-            this.line(frameTag(this.frame) + " hop  (" + this.hopsRemaining + " left)");
-        }
+        this.applyHeld();
 
         this.framesSinceFlap++;
 
@@ -726,21 +757,27 @@ class SimRun {
             if (cause == null) cause = "ceiling";
         }
 
-        this.lastDescription = this.buildDescription();
-        this.lastFields = this.lastDescription != null ? this.lastDescription.fields : null;
-
         if (!this.bird.live) {
             this.noteDeath(cause);
             return false;
         }
 
-        this.sentThisFrame = this.maybeSend();
+        this.maybeSend();
         return true;
     }
 
+    doFlap() {
+        this.bird.jump();
+        this.flapSeq++;
+        this.framesSinceFlap = 0;
+        this.flaps++;
+
+        this.write({ t: "flap", frame: this.frame });
+        this.line(frameTag(this.frame) + " flap");
+    }
+
     noteDeath(cause) {
-        const gap = this.gapCenter();
-        const pipeX1 = this.nextPipe != null ? this.nextPipe.topPipe.x1 : null;
+        const pipe = this.nextPipe;
 
         this.death = { frame: this.frame, cause: cause, score: this.bird.score };
 
@@ -750,157 +787,240 @@ class SimRun {
             cause: cause,
             score: this.bird.score,
             birdY: round2(this.bird.pos.y),
-            gapCenter: gap,
-            pipeX1: pipeX1
+            gapTop: pipe != null ? pipe.topPipe.y2 : null,
+            gapBottom: pipe != null ? pipe.bottomPipe.y1 : null,
+            pipeX1: pipe != null ? round2(pipe.topPipe.x1) : null
         });
 
-        this.line(frameTag(this.frame) + " DEATH " + pad(cause, 7) +
-            " score " + this.bird.score +
-            "  y=" + Math.round(this.bird.pos.y) +
-            " gap=" + (gap == null ? "-" : Math.round(gap)) +
-            " pipe=" + signed(this.pipeOffset()));
+        this.line(frameTag(this.frame) + " DEATH " + cause + " score " + this.bird.score);
 
         // the scene aborts every call the frame after the bird dies
         this.client.abortAll();
-        this.hopsRemaining = 0;
-        this.nextHopFrame = 0;
+        this.held = [];
     }
 
-    // same selecting criterion as the watch scene
-    selectNextPipe() {
-        return this.pipes.filter(function (pipe) {
-            return pipe.bottomPipe.x1 > BIRD_X - (PIPE_WIDTH + BIRD_R);
-        })[0];
-    }
-
-    buildDescription() {
-        if (this.nextPipe == null) return null;
-
-        const followingPipe = this.pipes[this.pipes.indexOf(this.nextPipe) + 1];
-
-        return JevTranslator.describeScene({
-            birdX: this.bird.pos.x,
-            birdY: this.bird.pos.y,
-            birdVelocity: this.bird.velocity,
-            birdRadius: JEV_COLLISION_R,
-            framesSinceFlap: this.framesSinceFlap / this.timeScale,
-            nextPipe: {
-                x1: this.nextPipe.topPipe.x1,
-                x2: this.nextPipe.topPipe.x2,
-                gapCenter: this.nextPipe.pos.y
-            },
-            followingPipe: followingPipe != null ? { gapCenter: followingPipe.pos.y } : null,
-            groundY: this.height - GROUND_HEIGHT,
-            canvasHeight: this.height
-        });
-    }
+    /* --------------------------------------------------------- answers */
 
     drainAnswers() {
         let message = this.client.takeAnswer();
         while (message != null) {
             const tag = message.tag || {};
 
-            // only an answer about a flight that is already over is worthless
-            if (tag.runId !== this.runId) {
-                this.client.stats.discarded++;
-            } else {
-                const maneuver = message.answers.maneuver;
-                const choice = maneuver != null ? maneuver.choice : null;
-                const hops = JevQuestions.HOPS[choice];
-                this.hopsRemaining = (typeof hops === "number") ? hops : 0;
-                this.nextHopFrame = this.frame; // so the first hop lands this frame
+            this.noteLatency(message.latencyMs);
 
-                this.noteAnswer(message, choice);
+            this.latenciesMs.push(message.latencyMs);
+            this.latenciesFrames.push(this.frame - tag.sentFrame);
+            if (message.modelMs != null) this.modelMsValues.push(message.modelMs);
+
+            let outcome;
+            if (tag.runId !== this.runId) {
+                // an answer about a flight that is already over is worthless
+                this.discarded++;
+                outcome = "discarded";
+            } else if (tag.flapSeq !== this.flapSeq) {
+                // the bird flapped after this question was asked, so the world it
+                // described never happened
+                this.superseded++;
+                outcome = "superseded";
+            } else {
+                this.held.push({
+                    reqId: message.reqId,
+                    tag: tag,
+                    answer: this.decisionOf(message)
+                });
+                outcome = "held";
             }
+
+            this.noteRecv(message, outcome);
 
             message = this.client.takeAnswer();
         }
     }
 
-    noteAnswer(message, choice) {
-        const sentFrame = message.tag.frame;
-        const latencyFrames = this.frame - sentFrame;
-        const maneuver = message.answers.maneuver || {};
-        const probabilities = maneuver.probabilities || null;
-        const read = message.answers.read || null;
-        const danger = message.answers.danger || null;
+    decisionOf(message) {
+        const decision = (message.answers && message.answers.decision) || {};
+        return {
+            choice: decision.choice !== undefined ? decision.choice : null,
+            confidence: decision.confidence !== undefined ? decision.confidence : null,
+            probabilities: decision.probabilities || null
+        };
+    }
 
-        const readChoice = (read != null && read.choice !== undefined) ? read.choice : null;
-        const dangerScore = (danger != null && danger.score !== undefined) ? danger.score : null;
-
-        this.latenciesMs.push(message.latencyMs);
-        this.latenciesFrames.push(latencyFrames);
-
-        if (this.lastChoice !== null && choice !== this.lastChoice) this.flips++;
-        this.lastChoice = choice;
+    noteRecv(message, outcome) {
+        const tag = message.tag || {};
+        const decision = this.decisionOf(message);
+        const latencyFrames = this.frame - tag.sentFrame;
 
         this.write({
             t: "recv",
             frame: this.frame,
             reqId: message.reqId,
-            sentFrame: sentFrame,
             latencyMs: message.latencyMs,
-            choice: choice,
-            probs: probabilities,
-            danger: dangerScore,
-            read: readChoice,
-            birdY: round2(this.bird.pos.y),
-            vel: round2(this.bird.velocity)
+            modelMs: message.modelMs,
+            choice: decision.choice,
+            probs: decision.probabilities,
+            confidence: decision.confidence,
+            outcome: outcome
         });
 
-        const p = (probabilities != null && choice != null) ? probabilities[choice] : null;
+        const p = decision.confidence != null
+            ? decision.confidence
+            : (decision.probabilities != null && decision.choice != null
+                ? decision.probabilities[decision.choice]
+                : null);
 
         this.line(frameTag(this.frame) + " recv " + pad("#" + message.reqId, 4) +
-            " (" + padLeft(latencyFrames, 2) + "f, " + padLeft(message.latencyMs, 4) + "ms)" +
-            " -> " + pad(choice || "?", 12) + prob(p) +
-            "  " + formatProbs(probabilities) +
-            "  danger " + (dangerScore == null ? "-   " : Number(dangerScore).toFixed(2)) +
-            "  read " + pad(readChoice || "-", 10) +
-            " y=" + Math.round(this.bird.pos.y) +
-            " v=" + this.bird.velocity.toFixed(1));
+            " (" + padLeft(latencyFrames, 2) + "f, " + padLeft(message.latencyMs, 4) + "ms" +
+            (message.modelMs != null ? ", model " + message.modelMs + "ms" : "") + ")" +
+            " " + pad(decision.choice || "?", 4) + " " + prob(p) +
+            " " + outcome);
     }
+
+    // Held answers come due at their targetFrame. Anything still in the future
+    // waits; anything too far in the past described a world that has already
+    // been overtaken.
+    applyHeld() {
+        if (this.held.length === 0) return;
+
+        this.held.sort(function (a, b) { return a.tag.targetFrame - b.tag.targetFrame; });
+
+        const keep = [];
+        let flapped = false;
+
+        for (let i = 0; i < this.held.length; i++) {
+            const item = this.held[i];
+
+            if (flapped) {
+                // a flap invalidates every other answer: they all described a
+                // bird that was going to be left alone
+                this.superseded++;
+                this.write({
+                    t: "recv",
+                    frame: this.frame,
+                    reqId: item.reqId,
+                    latencyMs: null,
+                    modelMs: null,
+                    choice: item.answer.choice,
+                    probs: item.answer.probabilities,
+                    confidence: item.answer.confidence,
+                    outcome: "superseded"
+                });
+                continue;
+            }
+
+            const targetFrame = item.tag.targetFrame;
+
+            if (targetFrame > this.frame) {
+                keep.push(item);
+                continue;
+            }
+
+            const lateBy = this.frame - targetFrame;
+
+            if (lateBy > this.lateFrames) {
+                this.stale++;
+                this.write({
+                    t: "stale",
+                    frame: this.frame,
+                    reqId: item.reqId,
+                    targetFrame: targetFrame
+                });
+                this.line(frameTag(this.frame) + " stale " + pad("#" + item.reqId, 4) +
+                    " ->" + frameTag(targetFrame) + " (" + lateBy + "f late)");
+                continue;
+            }
+
+            this.applied++;
+            this.lateByValues.push(Math.abs(lateBy));
+
+            this.write({
+                t: "apply",
+                frame: this.frame,
+                reqId: item.reqId,
+                targetFrame: targetFrame,
+                choice: item.answer.choice,
+                lateBy: lateBy
+            });
+            this.line(frameTag(this.frame) + " apply " + pad("#" + item.reqId, 4) +
+                " " + pad(item.answer.choice || "?", 4) + " (" + lateBy + "f late)");
+
+            if (item.answer.choice === FLAP) {
+                this.appliedFlap++;
+                this.doFlap();
+                flapped = true;
+            } else {
+                this.appliedWait++;
+            }
+        }
+
+        this.held = keep;
+    }
+
+    /* ----------------------------------------------------------- sends */
 
     maybeSend() {
         if (!this.bird.live) return 0;
-        if (this.lastDescription == null) return 0;
-        if (this.frame - this.lastTickFrame < this.tick) return 0;
+
+        const now = Date.now();
+        if (now - this.lastSendMs < this.tickMs) return 0;
         if (!this.client.canSend()) return 0;
 
-        const reqId = this.sendNow();
+        const reqId = this.sendNow(this.leadFrames());
 
-        // a skipped send must not eat the tick
-        if (reqId) this.lastTickFrame = this.frame;
+        // a skipped send must not eat the cadence
+        if (reqId) this.lastSendMs = now;
         return reqId;
     }
 
-    sendNow() {
-        const reqId = this.client.send(this.lastDescription.state, JevQuestions.build(), {
+    sendNow(leadFrames) {
+        const described = this.describe(leadFrames);
+        if (described == null) return 0;
+
+        const leadMs = this.leadMode === "none" ? 0 : Math.round(this.leadMs);
+        const targetFrame = this.frame + leadFrames;
+        const sentFrame = this.frame;
+        const flapSeq = this.flapSeq;
+
+        const tag = {
             runId: this.runId,
-            frame: this.frame
-        });
+            reqId: 0,
+            flapSeq: flapSeq,
+            sentFrame: sentFrame,
+            targetFrame: targetFrame
+        };
 
+        const reqId = this.client.send(described.state, JevQuestions.build(), tag);
         if (!reqId) return 0;
+        tag.reqId = reqId;
 
-        const fields = this.lastFields;
-        const gap = this.gapCenter();
+        const fields = described.fields;
+        const predicted = described.predicted;
+
+        this.leadFramesValues.push(leadFrames);
 
         this.write({
             t: "send",
-            frame: this.frame,
+            frame: sentFrame,
             reqId: reqId,
-            state: fields,
-            birdY: round2(this.bird.pos.y),
-            vel: round2(this.bird.velocity),
-            gapCenter: gap,
-            pipeX1: this.nextPipe != null ? this.nextPipe.topPipe.x1 : null
+            targetFrame: targetFrame,
+            leadFrames: leadFrames,
+            leadMs: leadMs,
+            fields: fields,
+            actual: {
+                birdY: round2(this.bird.pos.y),
+                vel: round2(this.bird.velocity),
+                pipeX1: this.nextPipe != null ? round2(this.nextPipe.topPipe.x1) : null
+            }
         });
 
-        this.line(frameTag(this.frame) + " send " + pad("#" + reqId, 4) +
-            " y=" + padLeft(Math.round(this.bird.pos.y), 3) +
-            " v=" + padLeft(this.bird.velocity.toFixed(1), 5) +
-            " gap=" + (gap == null ? "-" : Math.round(gap)) +
-            " pipe=" + padLeft(signed(this.pipeOffset()), 5) +
-            "  " + fields.vertical_motion + " | " + fields.place_in_gap + " | " + fields.distance);
+        this.line(frameTag(sentFrame) + " send " + pad("#" + reqId, 4) +
+            " ->" + frameTag(targetFrame) +
+            " (lead " + leadFrames + "f/" + leadMs + "ms)" +
+            " y=" + Math.round(predicted.birdY) +
+            " v=" + predicted.birdVelocity.toFixed(1) +
+            " | " + fields.position +
+            " | " + fields.motion +
+            " | dist " + fields.distance);
 
         return reqId;
     }
@@ -913,24 +1033,21 @@ class SimRun {
         }
     }
 
-    // Frame 0: describe the opening scene, hold the world still until the
-    // pilot answers, apply that answer as the first plan. Nothing moves in
-    // here, so a cold first call costs wall clock but no altitude.
+    // Before frame 1: describe the opening scene with no lead, hold the world
+    // still until the pilot answers, act on it. Nothing moves in here, so a cold
+    // first call costs wall clock but no altitude.
     async doWarmStart() {
         this.nextPipe = this.selectNextPipe();
-        this.lastDescription = this.buildDescription();
-        this.lastFields = this.lastDescription != null ? this.lastDescription.fields : null;
-
-        if (this.lastDescription == null) return;
 
         const startedAt = Date.now();
-        const reqId = this.sendNow();
+        const reqId = this.sendNow(0);
         if (!reqId) return;
 
-        this.lastTickFrame = this.frame;
+        this.lastSendMs = Date.now();
 
         await this.awaitAnswer();
         this.drainAnswers();
+        this.applyHeld();
 
         this.warmStartMs = Date.now() - startedAt;
 
@@ -946,7 +1063,7 @@ class SimRun {
     async fly() {
         const startedAt = Date.now();
 
-        if (this.opts.warmStart) await this.doWarmStart();
+        await this.doWarmStart();
 
         let deadline = Date.now();
 
@@ -957,16 +1074,6 @@ class SimRun {
             else await Promise.resolve();
 
             if (!this.step()) break;
-
-            // lockstep: the world holds still until the answer is back, so the
-            // plan is applied on the very next frame and latency costs no
-            // altitude at all
-            if (this.lockstep && this.sentThisFrame) {
-                await this.awaitAnswer();
-                this.drainAnswers();
-                this.sentThisFrame = 0;
-                deadline = Date.now();
-            }
         }
 
         if (this.death == null) {
@@ -981,17 +1088,24 @@ class SimRun {
             wallSeconds: (Date.now() - startedAt) / 1000,
             score: this.bird.score,
             cause: this.death != null ? this.death.cause : "survived",
-            requests: this.client.stats.requests,
-            answers: this.client.stats.answers,
+            sent: this.client.stats.requests,
+            answered: this.client.stats.answers,
             errors: this.client.stats.errors,
-            discarded: this.client.stats.discarded,
+            applied: this.applied,
+            appliedFlap: this.appliedFlap,
+            appliedWait: this.appliedWait,
+            superseded: this.superseded,
+            stale: this.stale,
+            discarded: this.discarded,
+            flaps: this.flaps,
             errorLog: this.client.errorLog,
             latenciesMs: this.latenciesMs,
             latenciesFrames: this.latenciesFrames,
-            hops: this.hops,
-            flips: this.flips,
-            lockstep: this.lockstep,
-            warmStart: this.opts.warmStart === true,
+            modelMsValues: this.modelMsValues,
+            leadFramesValues: this.leadFramesValues,
+            lateByValues: this.lateByValues,
+            timeScale: this.timeScale,
+            leadMode: this.leadMode,
             warmStartMs: this.warmStartMs
         };
     }
@@ -1002,42 +1116,55 @@ class SimRun {
 function printSummary(label, rows) {
     const latMs = [];
     const latFrames = [];
+    const modelMs = [];
+    const leadFrames = [];
+    const lateBy = [];
+
     const totals = {
-        frames: 0, score: 0, requests: 0, answers: 0,
-        errors: 0, discarded: 0, hops: 0, flips: 0, wall: 0
+        frames: 0, score: 0, wall: 0,
+        sent: 0, answered: 0, applied: 0, appliedFlap: 0, appliedWait: 0,
+        superseded: 0, stale: 0, discarded: 0, errors: 0, flaps: 0
     };
 
     for (const r of rows) {
         for (const v of r.latenciesMs) latMs.push(v);
         for (const v of r.latenciesFrames) latFrames.push(v);
+        for (const v of r.modelMsValues) modelMs.push(v);
+        for (const v of r.leadFramesValues) leadFrames.push(v);
+        for (const v of r.lateByValues) lateBy.push(v);
+
         totals.frames += r.frames;
         totals.score += r.score;
-        totals.requests += r.requests;
-        totals.answers += r.answers;
-        totals.errors += r.errors;
-        totals.discarded += r.discarded;
-        totals.hops += r.hops;
-        totals.flips += r.flips;
         totals.wall += r.wallSeconds;
+        totals.sent += r.sent;
+        totals.answered += r.answered;
+        totals.applied += r.applied;
+        totals.appliedFlap += r.appliedFlap;
+        totals.appliedWait += r.appliedWait;
+        totals.superseded += r.superseded;
+        totals.stale += r.stale;
+        totals.discarded += r.discarded;
+        totals.errors += r.errors;
+        totals.flaps += r.flaps;
     }
 
     const sortedMs = latMs.slice().sort(function (a, b) { return a - b; });
-    const sortedFrames = latFrames.slice().sort(function (a, b) { return a - b; });
-    const meanFrames = mean(latFrames);
-    const spacing = JevQuestions.HOP_SPACING_FRAMES;
+    const timeScale = rows[0].timeScale;
 
     const warmStarts = rows
         .map(function (r) { return r.warmStartMs; })
         .filter(function (v) { return v != null; });
 
     console.log("\n=== " + label + " ===");
-    console.log("  mode            : lockstep: " + (rows[0].lockstep ? "on" : "off") +
-        ", warm start: " + (rows[0].warmStart ? "on" : "off") +
+    console.log("  lead            : " + rows[0].leadMode +
+        ", mean " + mean(leadFrames).toFixed(1) + " frames" +
         (warmStarts.length > 0
-            ? " (first answer after " + warmStarts.map(function (v) { return v + " ms"; }).join(", ") + ")"
+            ? " (warm start " + warmStarts.map(function (v) { return v + " ms"; }).join(", ") + ")"
             : ""));
+    console.log("  time scale      : " + timeScale + "x" +
+        (timeScale === 1 ? " (game time = wall time)" : " (the world runs " + timeScale + "x slower than wall time)"));
     console.log("  frames survived : " + totals.frames + "  (" + (totals.frames / 60).toFixed(2) +
-        " s of game time, " + totals.wall.toFixed(2) + " s of wall clock)");
+        " s of draw time, " + totals.wall.toFixed(2) + " s of wall clock)");
     console.log("  score           : " + totals.score);
     if (rows.length === 1) {
         console.log("  cause of death  : " + rows[0].cause);
@@ -1046,22 +1173,19 @@ function printSummary(label, rows) {
             return "run " + (r.runIndex + 1) + " " + r.cause + " (score " + r.score + ", " + r.frames + "f)";
         }).join("; "));
     }
-    console.log("  requests        : " + totals.requests + " sent, " + totals.answers + " answered, " +
-        totals.errors + " errored, " + totals.discarded + " discarded");
+    console.log("  requests        : " + totals.sent + " sent, " + totals.answered + " answered, " +
+        totals.applied + " applied, " + totals.superseded + " superseded, " +
+        totals.stale + " stale, " + totals.discarded + " discarded" +
+        (totals.errors > 0 ? ", " + totals.errors + " errored" : ""));
+    console.log("  decisions       : " + totals.appliedFlap + " FLAP, " + totals.appliedWait +
+        " WAIT | " + totals.flaps + " flaps");
     console.log("  latency         : mean " + Math.round(mean(latMs)) + " ms, p95 " +
         Math.round(percentile(sortedMs, 0.95)) + " ms");
-    console.log("                    mean " + meanFrames.toFixed(1) + " frames, p95 " +
-        percentile(sortedFrames, 0.95) + " frames");
-    console.log("  hops executed   : " + totals.hops);
-    console.log("  choice flips    : " + totals.flips + " of " +
-        Math.max(0, totals.answers - rows.length) + " possible");
-    if (rows[0].lockstep) {
-        console.log("  staleness       : none, the world is frozen while a request is in flight" +
-            " (hop spacing " + spacing + " frames)");
-    } else {
-        console.log("  staleness       : " + meanFrames.toFixed(1) + " frames of latency against the " +
-            spacing + "-frame hop spacing (" + (meanFrames / spacing).toFixed(2) + "x)");
-    }
+    console.log("  model time      : " + (modelMs.length > 0
+        ? "mean " + Math.round(mean(modelMs)) + " ms over " + modelMs.length + " answers"
+        : "not reported"));
+    console.log("  applied lateness: mean " + mean(lateBy).toFixed(2) + " frames" +
+        " (dropped beyond " + rows[0].lateFramesLimit + " frames)");
 
     const allErrors = [];
     for (const r of rows) {
@@ -1083,7 +1207,7 @@ async function main() {
     const opts = parseArgs(process.argv.slice(2));
 
     if (opts.mock) {
-        opts.transport = mockTransport();
+        opts.transport = mockTransport(makeRandom(opts.seed ^ 0x5bf03635));
     } else {
         try {
             require("dotenv").config();
@@ -1105,16 +1229,22 @@ async function main() {
 
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 
-    console.log("flappy-jev simulator | translator v" + JevTranslator.VERSION +
-        " | hops " + JSON.stringify(JevQuestions.HOPS) +
-        " | hop spacing " + JevQuestions.HOP_SPACING_FRAMES + " frames");
+    console.log("flappy-jev simulator v2 | translator v" + JevTranslator.VERSION +
+        " | decision " + JevQuestions.FLAP + "/" + JevQuestions.WAIT);
     console.log("canvas " + opts.width + "x" + opts.height +
-        " | tick every " + opts.tick + " frames" +
+        " | tick every " + opts.tickMs + " ms" +
         " | max in flight " + opts.maxInFlight +
-        " | budget " + opts.maxFrames + " frames (" + (opts.maxFrames / 60).toFixed(1) + " s)" +
-        " | transport " + (opts.mock ? "mock, " + MOCK_LATENCY_MS + " ms" : "typesafe " + MODEL));
-    console.log("warm start " + (opts.warmStart ? "on" : "off") +
-        " | lockstep " + (opts.lockstep ? "on, tick every " + opts.tickLockstep + " frames" : "off"));
+        " | late window " + opts.lateFrames + " frames" +
+        " | time scale " + opts.timeScale + "x" +
+        " | budget " + opts.maxFrames + " frames (" + (opts.maxFrames / 60).toFixed(1) + " s)");
+    console.log("lead " + (opts.leadMode === "none"
+        ? "off (--no-lead)"
+        : (opts.leadMode === "fixed"
+            ? "fixed at " + opts.leadMs + " ms"
+            : "EMA, alpha " + LEAD_ALPHA + ", from " + LEAD_INITIAL_MS + " ms")) +
+        " | transport " + (opts.mock
+            ? "mock, " + MOCK_LATENCY_MS + " +-" + MOCK_JITTER_MS + " ms"
+            : "typesafe " + MODEL + ", keep-alive"));
 
     const rows = [];
 
@@ -1128,6 +1258,7 @@ async function main() {
 
         const run = new SimRun(opts, seed, i, trace);
         const row = await run.fly();
+        row.lateFramesLimit = opts.lateFrames;
         rows.push(row);
 
         await new Promise(function (resolve) { trace.end(resolve); });

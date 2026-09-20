@@ -116,7 +116,6 @@ body {
 .jev-panel[data-status="backoff"] .jev-dot { background: #e8a33d; }
 .jev-panel[data-status="waiting"] .jev-dot { background: #6fc2d0; }
 .jev-panel[data-status="paused"] .jev-dot { background: #c8b3ff; }
-.jev-panel[data-status="lockstep"] .jev-dot { background: #4f8a8b; }
 
 .jev-title {
     margin-top: 10px;
@@ -144,6 +143,15 @@ body {
 
 .jev-val {
     color: #dfe6f3;
+}
+
+/* the quiet lines: what the numbers are about, what was last spent */
+.jev-dim {
+    color: #6f86a8;
+}
+
+.jev-dim + .jev-dl {
+    margin-top: 2px;
 }
 
 .jev-read-row {
