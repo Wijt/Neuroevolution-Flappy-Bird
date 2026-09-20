@@ -547,7 +547,7 @@ var JevPanel = (function () {
         writeProb(els.wait, applied, JevQuestions.WAIT);
 
         let waiting = scene.waitingForPilot || applied == null || applied.choice == null;
-        setText(els.executing, waiting ? "WAITING FOR PILOT" : applied.choice.toLowerCase());
+        setText(els.executing, waiting ? "waiting for the pilot" : applied.choice.toLowerCase());
         setClass(els.executing, "jd-flap", !waiting && applied.choice === JevQuestions.FLAP);
 
         gather(scene);
