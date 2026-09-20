@@ -36,7 +36,10 @@ const JEV_MAX_IN_FLIGHT = 8;
 const JEV_LATE_FRAMES = 6;
 
 //the second horizon sits this many frames behind the first, so a late answer still fits
-const JEV_HORIZON_GAP_FRAMES = 8;
+// 0 = one snapshot and one question per request. A second snapshot `later` (gap > 0)
+// lands answers half a frame closer to their moment but did not change the score in the
+// simulator A/B at 1/4 speed, and costs ~55% more tokens. Kept as a knob.
+const JEV_HORIZON_GAP_FRAMES = 0;
 
 //the lead is an EMA of the measured latency, so a slow network widens the prediction
 const JEV_LEAD_ALPHA = 0.3;
@@ -368,13 +371,16 @@ class JevScene extends Scene {
     // it, and one question per snapshot. The tag remembers, per horizon, the frame the
     // answer belongs to and the words it was asked about.
     sendNow(leadFrames, gapFrames) {
-        let leads = [
-            { key: "now", frames: leadFrames },
-            { key: "later", frames: leadFrames + (gapFrames || 0) }
-        ];
+        let twoHorizons = (gapFrames || 0) > 0;
+        let leads = [{ key: "now", frames: leadFrames }];
+        if (twoHorizons) leads.push({ key: "later", frames: leadFrames + gapFrames });
 
         let description = JevTranslator.describeHorizons(this.buildInput(), leads, JEV_DT);
         if (description == null) return 0;
+
+        //one snapshot travels bare with the single `decision` question, two travel side by side
+        let state = twoHorizons ? description.state : description.state.now;
+        let questions = twoHorizons ? JevQuestions.build(JevQuestions.HORIZONS) : JevQuestions.build();
 
         let asked = {};
         description.snapshots.forEach(snapshot => {
@@ -385,7 +391,7 @@ class JevScene extends Scene {
             };
         });
 
-        let reqId = this.client.send(description.state, JevQuestions.build(JevQuestions.HORIZONS), {
+        let reqId = this.client.send(state, questions, {
             runId: this.runId,
             sentFrame: this.frame,
             asked: asked
@@ -402,7 +408,7 @@ class JevScene extends Scene {
             frame: this.frame,
             reqId: reqId,
             targetFrame: asked.now.targetFrame,
-            laterFrame: asked.later.targetFrame,
+            laterFrame: asked.later != null ? asked.later.targetFrame : null,
             leadFrames: leadFrames,
             leadMs: Math.round(this.leadMs),
             fields: asked.now.fields,
@@ -452,7 +458,8 @@ class JevScene extends Scene {
             } else {
                 outcome = "held";
                 Object.keys(asked).forEach(key => {
-                    let answer = answers[key] || {};
+                    //a single-snapshot request answers under `decision`, its candidate is still `now`
+                    let answer = answers[key] || (key === "now" ? answers.decision : null) || {};
                     choices[key] = answer.choice != null ? answer.choice : null;
 
                     this.client.stats.held++;

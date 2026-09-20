@@ -94,7 +94,7 @@ function jevTraceLines(record) {
 
         return [jevFrameTag(record.frame) + " send " + jevPad("#" + record.reqId, 4) +
             " ->" + jevFrameTag(record.targetFrame) +
-            "/" + jevFrameTag(record.laterFrame) + " (" + record.leadFrames + "f)" +
+            (record.laterFrame != null ? "/" + jevFrameTag(record.laterFrame) : "") + " (" + record.leadFrames + "f)" +
             " y=" + jevPadLeft(Math.round(actual.birdY), 3) +
             " v=" + jevPadLeft(Number(actual.vel).toFixed(1), 5) +
             " | " + jevShortPosition(fields.position) +
