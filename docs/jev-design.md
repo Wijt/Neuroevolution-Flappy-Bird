@@ -461,10 +461,10 @@ below the gap do not depend on motion in the criteria, the two halves do. A flap
 clears the held list. Stub run: stale answers fell from 8.6 percent of requests to 0.1
 percent, about 1.5 applied answers per request, a 12-flap climb in 35 frames.
 
-**Two horizons per request (knob, off by default).** `describeHorizons` puts a `now` and a
-`later` snapshot side by side and `JevQuestions.build(HORIZONS)` asks one question per
-snapshot, each told which key to judge. Calibration with two horizons: 24/24, margin 0.40,
-so Jev reads the named snapshot and ignores the other. The simulator A/B against real Jev
+**Two horizons per request (tested, removed).** For the A/B, each request carried a `now`
+and a `later` snapshot side by side with one question per snapshot, each told which key to
+judge. Calibration in that form: 24/24, margin 0.40, so Jev reads a named snapshot and
+ignores its neighbour, which is useful to know for fan-out designs in general. The simulator A/B against real Jev
 at 1/4 speed, three seeds, 90 s each:
 
 | | two horizons | single |
@@ -476,8 +476,8 @@ at 1/4 speed, three seeds, 90 s each:
 | tokens per request | about 760 | about 490 |
 
 The second horizon lands answers half a frame closer to their moment and the outcome does
-not care. `JEV_HORIZON_GAP_FRAMES = 0` ships; set it to 8 to turn `later` back on. The
-simulator flag is `--horizon-gap`.
+not care. The mechanism was removed from the code rather than kept as a knob; commit
+3312c4d holds the two-horizon version if it is ever wanted again.
 
 **Cost as shipped.** About 490 input tokens per request, 8 to 10 requests per second while
 flying, so roughly 1M tokens per 20 pipes at 1/4 speed, which is about 4 cents at $0.042

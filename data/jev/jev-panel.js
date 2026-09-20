@@ -2,9 +2,9 @@
 // Plain DOM on purpose: p5 0.10.2's createDiv() is clumsy for something this nested,
 // and the panel must never touch the canvas.
 //
-// v2.1 shows three things and no more: the `now` snapshot of the last request (the
-// world as it will be, not as it is), the candidate the loop last spent (with the
-// horizon it came from), and the bookkeeping that says whether the timing is working.
+// It shows three things and no more: the snapshot of the last request (the world as
+// it will be, not as it is), the candidate the loop last spent, and the bookkeeping
+// that says whether the timing is working.
 const JEV_DECISION_OPTIONS = [
     "FLAP",
     "WAIT"
@@ -20,7 +20,7 @@ const JEV_SCENE_ROWS = [
 
 const JEV_META_ROWS = [
     { key: "inFlight", label: "in flight" },
-    { key: "candidates", label: "candidates" },
+    { key: "held", label: "held" },
     { key: "sent", label: "sent" },
     { key: "applied", label: "applied" },
     { key: "superseded", label: "superseded" },
@@ -51,18 +51,6 @@ function jevFrameTag(frame) {
     return "f" + s;
 }
 
-function jevPad(text, width) {
-    let s = String(text);
-    while (s.length < width) s = s + " ";
-    return s;
-}
-
-function jevPadLeft(text, width) {
-    let s = String(text);
-    while (s.length < width) s = " " + s;
-    return s;
-}
-
 //probabilities read better without the leading zero: .61
 function jevProb(p) {
     let n = Number(p);
@@ -83,55 +71,50 @@ function jevTraceLines(record) {
     if (record.t === "header") {
         return ["-- run " + record.runId + " v" + record.version +
             ", tick " + record.tickMs + "ms, " + record.maxInFlight + " in flight" +
-            ", late " + record.lateFrames + "f, gap " + record.horizonGapFrames + "f" +
+            ", late " + record.lateFrames + "f" +
             ", speed 1/" + record.timeScale +
-            ", translator " + record.translator];
+            ", translator " + record.translator +
+            ", freshness " + record.freshness];
     }
 
     if (record.t === "send") {
         let fields = record.fields || {};
         let actual = record.actual || {};
 
-        return [jevFrameTag(record.frame) + " send " + jevPad("#" + record.reqId, 4) +
-            " ->" + jevFrameTag(record.targetFrame) +
-            (record.laterFrame != null ? "/" + jevFrameTag(record.laterFrame) : "") + " (" + record.leadFrames + "f)" +
-            " y=" + jevPadLeft(Math.round(actual.birdY), 3) +
-            " v=" + jevPadLeft(Number(actual.vel).toFixed(1), 5) +
+        return [jevFrameTag(record.frame) + " send #" + record.reqId +
+            " ->" + jevFrameTag(record.targetFrame) + " (" + record.leadFrames + "f)" +
+            " y=" + Math.round(actual.birdY) +
+            " v=" + Number(actual.vel).toFixed(1) +
             " | " + jevShortPosition(fields.position) +
             " | " + (fields.motion != null ? fields.motion : "-") +
             " | dist " + (fields.distance != null ? fields.distance : "-")];
     }
 
     if (record.t === "recv") {
-        //one line per request, both horizons on it: "now FLAP / later WAIT"
-        let choices = record.choices || {};
-        let parts = Object.keys(choices).map(key => key + " " + (choices[key] || "?"));
-
-        return [jevFrameTag(record.frame) + " recv " + jevPad("#" + record.reqId, 4) +
-            " (" + record.latencyMs + "ms) " + (parts.length > 0 ? parts.join(" / ") : "-") +
+        return [jevFrameTag(record.frame) + " recv #" + record.reqId +
+            " (" + record.latencyMs + "ms) " + (record.choice || "?") +
+            " " + jevProb(record.confidence) +
             " " + record.outcome];
     }
 
     if (record.t === "apply") {
-        return [jevFrameTag(record.frame) + " apply " + jevPad("#" + record.reqId, 4) +
-            " " + jevPad(record.key || "-", 5) +
+        return [jevFrameTag(record.frame) + " apply #" + record.reqId +
             " " + (record.choice || "?") + " (" + record.lateBy + "f late)"];
     }
 
     if (record.t === "stale") {
-        return [jevFrameTag(record.frame) + " stale " + jevPad("#" + record.reqId, 4) +
-            " " + jevPad(record.key || "-", 5) +
-            " ->" + jevFrameTag(record.targetFrame)];
+        return [jevFrameTag(record.frame) + " stale #" + record.reqId +
+            " (" + record.lateBy + "f late)"];
     }
 
     if (record.t === "superseded") {
         let asked = record.asked || {};
-        let now = record.now || {};
+        let current = record.current || {};
 
-        return [jevFrameTag(record.frame) + " super " + jevPad("#" + record.reqId, 4) +
-            " " + jevPad(record.key || "-", 5) +
-            " " + jevShortPosition(asked.position) + "/" + (asked.motion || "-") +
-            " -> " + jevShortPosition(now.position) + "/" + (now.motion || "-")];
+        return [jevFrameTag(record.frame) + " superseded #" + record.reqId +
+            " (" + (record.reason || "premise") + ": " +
+            jevShortPosition(asked.position) + "/" + (asked.motion || "-") +
+            " -> " + jevShortPosition(current.position) + "/" + (current.motion || "-") + ")"];
     }
 
     if (record.t === "flap") {
@@ -210,7 +193,7 @@ class JevPanel {
         //the numbers are the predicted world, saying so avoids a lot of confusion
         this.describedLabel = document.createElement("div");
         this.describedLabel.className = "jev-dim";
-        this.describedLabel.textContent = "described: now (at +0f)";
+        this.describedLabel.textContent = "described (at +0f)";
         sceneBox.appendChild(this.describedLabel);
 
         let list = document.createElement("dl");
@@ -397,7 +380,7 @@ class JevPanel {
         if (applied == null || applied.choice == null) return "last applied: none";
 
         return "last applied: " + applied.choice + " #" + applied.reqId +
-            " (" + (applied.key || "-") + "), " + applied.lateBy + "f late";
+            ", " + applied.lateBy + "f late";
     }
 
     update(view) {
@@ -414,7 +397,7 @@ class JevPanel {
         let fields = described.fields;
 
         this.setText("described", this.describedLabel,
-            "described: now (at +" + (described.leadFrames != null ? described.leadFrames : 0) + "f)");
+            "described (at +" + (described.leadFrames != null ? described.leadFrames : 0) + "f)");
 
         JEV_SCENE_ROWS.forEach(row => {
             let value = (fields != null && fields[row.key] != null) ? String(fields[row.key]) : "-";

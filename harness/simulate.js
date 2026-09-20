@@ -14,40 +14,29 @@
  * world `leadFrames` ahead with the bird left alone, describe THAT world, and
  * hold the answer until the frame it was about (targetFrame).
  *
- * v2.1 adds the two things this harness is here to measure:
- *
- *   1. Freshness by premise, not by flap. An answer is no longer thrown away
- *      just because the bird flapped in the meantime. When a held candidate
- *      comes due, the harness re-describes the world at lead 0 and asks
- *      JevTranslator.premiseHolds(askedFields, currentFields): if the words the
- *      answer rested on (position, and motion where it matters) still hold, the
- *      answer is still about the world the bird is in, so it is applied.
- *      Otherwise it is superseded with reason `premise`.
- *
- *   2. Two horizons per request. One request carries a snapshot at leadFrames
- *      (`now`) and another at leadFrames + --horizon-gap (`later`), with one
- *      question per horizon. Each answer yields two candidates, so the pilot
- *      can commit to a second flap before the next request lands -- which is
- *      what lets the bird string flaps together and actually climb.
- *
- * --horizon-gap 0 disables the second horizon and falls back to the v2 single
- * `decision` question, for A/B comparison against the two-horizon run.
+ * v2.1 adds the thing this harness is here to measure: freshness by premise,
+ * not by flap. An answer is no longer thrown away just because the bird flapped
+ * in the meantime. When a held candidate comes due, the harness re-describes the
+ * world at lead 0 and asks JevTranslator.premiseHolds(askedFields,
+ * currentFields): if the words the answer rested on (position, and motion where
+ * it matters) still hold, the answer is still about the world the bird is in, so
+ * it is applied. Otherwise it is superseded with reason `premise`.
  *
  *   node harness/simulate.js [--mock] [--seed=N] [--runs=N] [--max-frames=N]
  *                            [--tick-ms=N] [--max-in-flight=N] [--late-frames=N]
  *                            [--lead-ms=N] [--no-lead] [--time-scale=N]
- *                            [--horizon-gap=N] [--height=N] [--width=N] [--quiet]
+ *                            [--height=N] [--width=N] [--quiet]
  *
  * At most one FLAP is applied per frame; any candidate still held behind it
  * waits for the next frame and is judged again from scratch.
  *
  * --mock swaps the transport for a local fake (350 +-120 ms, the FLAP criterion
- * applied to each horizon's snapshot) so the whole pipeline can be exercised
+ * applied to the snapshot it was sent) so the whole pipeline can be exercised
  * without a key. Every run writes a JSONL trace under
  * <os tmpdir>/flappy-jev-sim/.
  *
- * The `send` timeline line shows the PREDICTED scenes -- that is what Jev is
- * being asked about. The trace keeps the unpredicted numbers beside them under
+ * The `send` timeline line shows the PREDICTED scene -- that is what Jev is
+ * being asked about. The trace keeps the unpredicted numbers beside it under
  * `actual`.
  *
  * Exit codes: 0 ran, 2 config/transport failure.
@@ -93,10 +82,7 @@ const MOCK_JITTER_MS = 120;
 const LEAD_ALPHA = 0.3;
 const LEAD_INITIAL_MS = 400;
 
-const DEFAULT_HORIZON_GAP = 8;
-
-const SINGLE_QUESTION_ID = "decision";
-const PRIMARY_HORIZON = "now";
+const QUESTION_ID = "decision";
 
 const FLAP = JevQuestions.FLAP;
 const WAIT = JevQuestions.WAIT;
@@ -116,7 +102,6 @@ function parseArgs(argv) {
         leadMs: null,
         noLead: false,
         timeScale: 1,
-        horizonGap: DEFAULT_HORIZON_GAP,
         height: DEFAULT_HEIGHT,
         width: null
     };
@@ -130,7 +115,6 @@ function parseArgs(argv) {
         "--late-frames": "lateFrames",
         "--lead-ms": "leadMs",
         "--time-scale": "timeScale",
-        "--horizon-gap": "horizonGap",
         "--height": "height",
         "--width": "width"
     };
@@ -450,10 +434,10 @@ function realTransport(apiKey) {
 }
 
 // The mock mirrors the FLAP criterion from jev-questions.js exactly, reading the
-// same two phrases Jev reads, once per question. It is not a smarter pilot than
-// Jev, it is the same pilot with no network and no judgement -- which is what
-// makes it useful: any hold / supersede / stale behaviour a mock run shows is
-// the harness, not the model.
+// same two phrases Jev reads. It is not a smarter pilot than Jev, it is the same
+// pilot with no network and no judgement -- which is what makes it useful: any
+// hold / supersede / stale behaviour a mock run shows is the harness, not the
+// model.
 function mockChoice(snapshot) {
     const bird = (snapshot && snapshot.bird) || {};
     const position = String(bird.position || "");
@@ -462,14 +446,6 @@ function mockChoice(snapshot) {
     if (position === "below the gap") return FLAP;
     if (position === "inside the gap, lower half" && motion !== "rising") return FLAP;
     return WAIT;
-}
-
-// A single-horizon request carries its snapshot at the top level and asks one
-// `decision` question about it; a two-horizon request nests one snapshot per
-// horizon key and asks one question per key.
-function snapshotFor(state, questionId) {
-    if (questionId === SINGLE_QUESTION_ID) return state;
-    return state != null ? state[questionId] : null;
 }
 
 function mockTransport(random) {
@@ -486,19 +462,18 @@ function mockTransport(random) {
             const timer = setTimeout(function () {
                 if (signal != null) signal.removeEventListener("abort", onAbort);
 
+                const choice = mockChoice(state);
+                const p = 0.91;
+                const probabilities = {};
+                probabilities[FLAP] = choice === FLAP ? p : 1 - p;
+                probabilities[WAIT] = choice === WAIT ? p : 1 - p;
+
                 const answers = {};
-                Object.keys(questions).forEach(function (questionId) {
-                    const choice = mockChoice(snapshotFor(state, questionId));
-                    const p = 0.91;
-                    const probabilities = {};
-                    probabilities[FLAP] = choice === FLAP ? p : 1 - p;
-                    probabilities[WAIT] = choice === WAIT ? p : 1 - p;
-                    answers[questionId] = {
-                        choice: choice,
-                        confidence: p,
-                        probabilities: probabilities
-                    };
-                });
+                answers[QUESTION_ID] = {
+                    choice: choice,
+                    confidence: p,
+                    probabilities: probabilities
+                };
 
                 resolve({
                     body: {
@@ -700,11 +675,6 @@ class SimRun {
         this.tickMs = opts.tickMs;
         this.lateFrames = opts.lateFrames;
 
-        this.horizonGap = opts.horizonGap;
-        this.horizonKeys = this.horizonGap > 0
-            ? JevQuestions.HORIZONS.slice()
-            : [PRIMARY_HORIZON];
-
         this.leadMode = opts.leadMode;
         this.leadMs = this.leadMode === "none"
             ? 0
@@ -723,7 +693,6 @@ class SimRun {
         this.applied = 0;
         this.appliedFlap = 0;
         this.appliedWait = 0;
-        this.appliedByHorizon = {};
         this.superseded = 0;
         this.stale = 0;
         this.discarded = 0;
@@ -738,7 +707,7 @@ class SimRun {
 
         this.write({
             t: "header",
-            version: "2.1",
+            version: 2,
             seed: seed,
             runId: this.runId,
             tickMs: this.tickMs,
@@ -746,8 +715,6 @@ class SimRun {
             lateFrames: this.lateFrames,
             timeScale: this.timeScale,
             leadMode: this.leadMode,
-            horizonGap: this.horizonGap,
-            horizons: this.horizonKeys,
             freshness: "premise",
             translator: JevTranslator.VERSION
         });
@@ -897,8 +864,8 @@ class SimRun {
 
     /* --------------------------------------------------------- answers */
 
-    answerOf(message, questionId) {
-        const answer = (message.answers && message.answers[questionId]) || {};
+    answerOf(message) {
+        const answer = (message.answers && message.answers[QUESTION_ID]) || {};
         return {
             choice: answer.choice !== undefined ? answer.choice : null,
             confidence: answer.confidence !== undefined ? answer.confidence : null,
@@ -906,14 +873,14 @@ class SimRun {
         };
     }
 
-    // Every answered request turns into one candidate per horizon. Nothing is
-    // judged here: freshness is decided at the targetFrame, against the premise
-    // the question was asked under.
+    // Every answered request turns into one candidate. Nothing is judged here:
+    // freshness is decided at the targetFrame, against the premise the question
+    // was asked under.
     drainAnswers() {
         let message = this.client.takeAnswer();
         while (message != null) {
             const tag = message.tag || {};
-            const horizons = tag.horizons || [];
+            const answer = this.answerOf(message);
 
             this.noteLatency(message.latencyMs);
 
@@ -921,36 +888,29 @@ class SimRun {
             this.latenciesFrames.push(this.frame - tag.sentFrame);
             if (message.modelMs != null) this.modelMsValues.push(message.modelMs);
 
-            const choices = horizons.map(function (h) {
-                return { key: h.key, answer: this.answerOf(message, h.questionId) };
-            }, this);
-
             let outcome;
             if (tag.runId !== this.runId) {
                 // an answer about a flight that is already over is worthless
                 this.discarded++;
                 outcome = "discarded";
             } else {
-                for (let i = 0; i < horizons.length; i++) {
-                    this.held.push({
-                        reqId: message.reqId,
-                        key: horizons[i].key,
-                        targetFrame: horizons[i].targetFrame,
-                        askedFields: horizons[i].fields,
-                        answer: choices[i].answer
-                    });
-                    this.candidatesHeld++;
-                }
+                this.held.push({
+                    reqId: message.reqId,
+                    targetFrame: tag.targetFrame,
+                    askedFields: tag.askedFields,
+                    answer: answer
+                });
+                this.candidatesHeld++;
                 outcome = "held";
             }
 
-            this.noteRecv(message, choices, outcome);
+            this.noteRecv(message, answer, outcome);
 
             message = this.client.takeAnswer();
         }
     }
 
-    noteRecv(message, choices, outcome) {
+    noteRecv(message, answer, outcome) {
         const tag = message.tag || {};
         const latencyFrames = this.frame - tag.sentFrame;
 
@@ -961,30 +921,21 @@ class SimRun {
             latencyMs: message.latencyMs,
             latencyFrames: latencyFrames,
             modelMs: message.modelMs,
-            choices: choices.map(function (c) {
-                return {
-                    key: c.key,
-                    choice: c.answer.choice,
-                    confidence: c.answer.confidence,
-                    probs: c.answer.probabilities
-                };
-            }),
+            choice: answer.choice,
+            confidence: answer.confidence,
             outcome: outcome
         });
 
-        const text = choices.map(function (c) {
-            const p = c.answer.confidence != null
-                ? c.answer.confidence
-                : (c.answer.probabilities != null && c.answer.choice != null
-                    ? c.answer.probabilities[c.answer.choice]
-                    : null);
-            return c.key + " " + (c.answer.choice || "?") + " " + prob(p);
-        }).join(", ");
+        const p = answer.confidence != null
+            ? answer.confidence
+            : (answer.probabilities != null && answer.choice != null
+                ? answer.probabilities[answer.choice]
+                : null);
 
         this.line(frameTag(this.frame) + " recv " + pad("#" + message.reqId, 4) +
             " (" + padLeft(message.latencyMs, 3) + "ms" +
             (message.modelMs != null ? ", model " + message.modelMs + "ms" : "") + ") " +
-            text + (outcome === "held" ? "" : " " + outcome));
+            (answer.choice || "?") + " " + prob(p) + " " + outcome);
     }
 
     // Held candidates come due at their targetFrame. Anything still in the
@@ -1025,12 +976,11 @@ class SimRun {
                     t: "stale",
                     frame: this.frame,
                     reqId: item.reqId,
-                    key: item.key,
                     targetFrame: item.targetFrame,
                     lateBy: lateBy
                 });
                 this.line(frameTag(this.frame) + " stale       " +
-                    pad("#" + item.reqId + "/" + item.key, 10) +
+                    pad("#" + item.reqId, 5) +
                     " (" + lateBy + "f late)");
                 continue;
             }
@@ -1044,7 +994,6 @@ class SimRun {
                     t: "superseded",
                     frame: this.frame,
                     reqId: item.reqId,
-                    key: item.key,
                     targetFrame: item.targetFrame,
                     reason: "premise",
                     asked: item.askedFields != null
@@ -1055,26 +1004,24 @@ class SimRun {
                         : null
                 });
                 this.line(frameTag(this.frame) + " superseded  " +
-                    pad("#" + item.reqId + "/" + item.key, 10) +
+                    pad("#" + item.reqId, 5) +
                     " (premise)");
                 continue;
             }
 
             this.applied++;
-            this.appliedByHorizon[item.key] = (this.appliedByHorizon[item.key] || 0) + 1;
             this.lateByValues.push(Math.abs(lateBy));
 
             this.write({
                 t: "apply",
                 frame: this.frame,
                 reqId: item.reqId,
-                key: item.key,
                 targetFrame: item.targetFrame,
                 choice: item.answer.choice,
                 lateBy: lateBy
             });
             this.line(frameTag(this.frame) + " apply       " +
-                pad("#" + item.reqId + "/" + item.key, 10) +
+                pad("#" + item.reqId, 5) +
                 " " + pad(item.answer.choice || "?", 4) + " (" + lateBy + "f late)");
 
             if (item.answer.choice === FLAP) {
@@ -1098,68 +1045,33 @@ class SimRun {
         if (now - this.lastSendMs < this.tickMs) return 0;
         if (!this.client.canSend()) return 0;
 
-        const reqId = this.sendNow(this.leadFrames(), false);
+        const reqId = this.sendNow(this.leadFrames());
 
         // a skipped send must not eat the cadence
         if (reqId) this.lastSendMs = now;
         return reqId;
     }
 
-    // One request, one snapshot per horizon, one question per horizon.
-    // `single` forces the v2 shape (a lone `decision` question about one
-    // snapshot); --horizon-gap 0 does the same for the whole run.
-    sendNow(leadFrames, single) {
-        const useSingle = single || this.horizonGap === 0;
-
-        let state;
-        let questions;
-        let horizons;
-
-        if (useSingle) {
-            const described = this.describe(leadFrames);
-            if (described == null) return 0;
-
-            state = described.state;
-            questions = JevQuestions.build();
-            horizons = [{
-                key: PRIMARY_HORIZON,
-                questionId: SINGLE_QUESTION_ID,
-                frames: leadFrames,
-                targetFrame: this.frame + leadFrames,
-                fields: described.fields
-            }];
-        } else {
-            const leads = [
-                { key: JevQuestions.HORIZONS[0], frames: leadFrames },
-                { key: JevQuestions.HORIZONS[1], frames: leadFrames + this.horizonGap }
-            ];
-            const described = JevTranslator.describeHorizons(this.input(), leads, this.dt);
-            if (described == null) return 0;
-
-            state = described.state;
-            questions = JevQuestions.build(JevQuestions.HORIZONS);
-            horizons = described.snapshots.map(function (s) {
-                return {
-                    key: s.key,
-                    questionId: s.key,
-                    frames: s.frames,
-                    targetFrame: this.frame + s.frames,
-                    fields: s.fields
-                };
-            }, this);
-        }
+    // One request: one snapshot at the lead, the single `decision` question about
+    // it, and a tag that remembers the frame the answer belongs to.
+    sendNow(leadFrames) {
+        const described = this.describe(leadFrames);
+        if (described == null) return 0;
 
         const leadMs = this.leadMode === "none" ? 0 : Math.round(this.leadMs);
         const sentFrame = this.frame;
+        const targetFrame = sentFrame + leadFrames;
 
         const tag = {
             runId: this.runId,
             reqId: 0,
             sentFrame: sentFrame,
-            horizons: horizons
+            targetFrame: targetFrame,
+            leadFrames: leadFrames,
+            askedFields: described.fields
         };
 
-        const reqId = this.client.send(state, questions, tag);
+        const reqId = this.client.send(described.state, JevQuestions.build(), tag);
         if (!reqId) return 0;
         tag.reqId = reqId;
 
@@ -1169,12 +1081,10 @@ class SimRun {
             t: "send",
             frame: sentFrame,
             reqId: reqId,
+            targetFrame: targetFrame,
             leadFrames: leadFrames,
             leadMs: leadMs,
-            horizonGap: useSingle ? 0 : this.horizonGap,
-            horizons: horizons.map(function (h) {
-                return { key: h.key, frames: h.frames, targetFrame: h.targetFrame, fields: h.fields };
-            }),
+            fields: described.fields,
             actual: {
                 birdY: round2(this.bird.pos.y),
                 vel: round2(this.bird.velocity),
@@ -1182,15 +1092,11 @@ class SimRun {
             }
         });
 
-        const targets = horizons.map(function (h) { return frameTag(h.targetFrame); }).join("/");
-        const text = horizons.map(function (h, i) {
-            const f = h.fields;
-            return h.key + ": " + shortPosition(f.position) + " | " + f.motion +
-                (i === 0 ? " | dist " + f.distance : "");
-        }).join(" ; ");
+        const f = described.fields;
 
-        this.line(frameTag(sentFrame) + " send        " + pad("#" + reqId, 4) +
-            " ->" + targets + " (" + leadFrames + "f) " + text);
+        this.line(frameTag(sentFrame) + " send        " + pad("#" + reqId, 5) +
+            " ->" + frameTag(targetFrame) + " (" + leadFrames + "f) " +
+            shortPosition(f.position) + " | " + f.motion + " | dist " + f.distance);
 
         return reqId;
     }
@@ -1203,14 +1109,14 @@ class SimRun {
         }
     }
 
-    // Before frame 1: describe the opening scene with no lead and a single
-    // horizon, hold the world still until the pilot answers, act on it. Nothing
-    // moves in here, so a cold first call costs wall clock but no altitude.
+    // Before frame 1: describe the opening scene with no lead, hold the world
+    // still until the pilot answers, act on it. Nothing moves in here, so a cold
+    // first call costs wall clock but no altitude.
     async doWarmStart() {
         this.nextPipe = this.selectNextPipe();
 
         const startedAt = Date.now();
-        const reqId = this.sendNow(0, true);
+        const reqId = this.sendNow(0);
         if (!reqId) return;
 
         this.lastSendMs = Date.now();
@@ -1266,7 +1172,6 @@ class SimRun {
             applied: this.applied,
             appliedFlap: this.appliedFlap,
             appliedWait: this.appliedWait,
-            appliedByHorizon: this.appliedByHorizon,
             superseded: this.superseded,
             stale: this.stale,
             discarded: this.discarded,
@@ -1280,8 +1185,6 @@ class SimRun {
             lateByValues: this.lateByValues,
             timeScale: this.timeScale,
             leadMode: this.leadMode,
-            horizonGap: this.horizonGap,
-            horizonKeys: this.horizonKeys,
             warmStartMs: this.warmStartMs
         };
     }
@@ -1303,7 +1206,6 @@ function printSummary(label, rows) {
         superseded: 0, stale: 0, discarded: 0, errors: 0, flaps: 0
     };
 
-    const byHorizon = {};
     let bestClimb = { rise: 0, frames: 0, fromFrame: 0, toFrame: 0 };
 
     for (const r of rows) {
@@ -1329,15 +1231,11 @@ function printSummary(label, rows) {
         totals.errors += r.errors;
         totals.flaps += r.flaps;
 
-        for (const key of Object.keys(r.appliedByHorizon)) {
-            byHorizon[key] = (byHorizon[key] || 0) + r.appliedByHorizon[key];
-        }
         if (r.climb.rise > bestClimb.rise) bestClimb = r.climb;
     }
 
     const sortedMs = latMs.slice().sort(function (a, b) { return a - b; });
     const timeScale = rows[0].timeScale;
-    const horizonGap = rows[0].horizonGap;
 
     const warmStarts = rows
         .map(function (r) { return r.warmStartMs; })
@@ -1351,10 +1249,7 @@ function printSummary(label, rows) {
         (warmStarts.length > 0
             ? " (warm start " + warmStarts.map(function (v) { return v + " ms"; }).join(", ") + ")"
             : ""));
-    console.log("  horizons        : " + (horizonGap > 0
-        ? rows[0].horizonKeys.join(" + ") + ", gap " + horizonGap + " frames"
-        : "single `decision` question (--horizon-gap 0)") +
-        " | freshness by premise");
+    console.log("  freshness       : by premise");
     console.log("  time scale      : " + timeScale + "x" +
         (timeScale === 1 ? " (game time = wall time)" : " (the world runs " + timeScale + "x slower than wall time)"));
     console.log("  frames survived : " + totals.frames + "  (" + (totals.frames / 60).toFixed(2) +
@@ -1373,9 +1268,6 @@ function printSummary(label, rows) {
         (totals.errors > 0 ? ", " + totals.errors + " errored" : ""));
     console.log("  candidates      : " + totals.candidatesHeld + " held, " + totals.applied +
         " applied, " + totals.superseded + " superseded (premise), " + totals.stale + " stale");
-    console.log("  applied/horizon : " + rows[0].horizonKeys.map(function (key) {
-        return key + " " + (byHorizon[key] || 0);
-    }).join(", "));
     console.log("  decisions       : " + totals.appliedFlap + " FLAP, " + totals.appliedWait +
         " WAIT | " + totals.flaps + " flaps, " + flapsPerGameMinute.toFixed(1) +
         " per minute of game time");
@@ -1443,10 +1335,7 @@ async function main() {
         " | late window " + opts.lateFrames + " frames" +
         " | time scale " + opts.timeScale + "x" +
         " | budget " + opts.maxFrames + " frames (" + (opts.maxFrames / 60).toFixed(1) + " s)");
-    console.log("horizons " + (opts.horizonGap > 0
-        ? JevQuestions.HORIZONS.join(" + ") + ", gap " + opts.horizonGap + " frames"
-        : "single `decision` question (--horizon-gap 0)") +
-        " | freshness by premise");
+    console.log("single `decision` question | freshness by premise");
     console.log("lead " + (opts.leadMode === "none"
         ? "off (--no-lead)"
         : (opts.leadMode === "fixed"
