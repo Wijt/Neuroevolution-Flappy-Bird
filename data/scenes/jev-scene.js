@@ -10,8 +10,13 @@
 //
 // The cadence is wall clock, not frame based: one request every JEV_TICK_MS with up
 // to JEV_MAX_IN_FLIGHT of them in the air. Answers overtake each other all the time,
-// which is fine: the tag says which flight and which flap era an answer was asked in,
-// and anything from an older era is dropped instead of steering a bird that already moved.
+// which is fine: every answer remembers the words it was asked about, and on the frame
+// it belongs to we check whether those words still describe the bird. They do -> spend it,
+// they do not -> the world moved on under it and it goes in the bin. A flap no longer
+// wipes everything in the air, so a climb can spend more than one answer per round trip.
+//
+// v2.1 also asks twice per request: the same flight at the expected arrival ("now") and
+// a little after it ("later"), so latency jitter has a second frame to land on.
 //
 // Slow game time is still here: the jev world advances by a fraction of a frame per
 // draw, so the same 60 fps drawing costs Jev fewer game frames per round trip.
@@ -29,6 +34,9 @@ const JEV_MAX_IN_FLIGHT = 8;
 
 //an answer that missed its frame by more than this is thrown away instead of applied
 const JEV_LATE_FRAMES = 6;
+
+//the second horizon sits this many frames behind the first, so a late answer still fits
+const JEV_HORIZON_GAP_FRAMES = 8;
 
 //the lead is an EMA of the measured latency, so a slow network widens the prediction
 const JEV_LEAD_ALPHA = 0.3;
@@ -78,8 +86,6 @@ class JevScene extends Scene {
         this.frame = 0;
         this.runId = 0;
 
-        //bumped on every flap: an answer asked before the last flap is about a bird that moved
-        this.flapSeq = 0;
         this.framesSinceFlap = 999;
 
         //wall clock of the last request that actually went out
@@ -88,7 +94,7 @@ class JevScene extends Scene {
         //the lead survives a restart, it is a property of the network and not of the flight
         this.leadMs = JEV_LEAD_START_MS;
 
-        //answers that are waiting for their frame
+        //candidates (one per horizon per answer) that are waiting for their frame
         this.held = [];
 
         //what the panel shows: the last description we sent and the last answer we spent
@@ -160,7 +166,6 @@ class JevScene extends Scene {
 
         this.frame = 0;
         this.runId++;
-        this.flapSeq = 0;
         this.framesSinceFlap = 999;
 
         this.held = [];
@@ -181,6 +186,7 @@ class JevScene extends Scene {
             tickMs: JEV_TICK_MS,
             maxInFlight: JEV_MAX_IN_FLIGHT,
             lateFrames: JEV_LATE_FRAMES,
+            horizonGapFrames: JEV_HORIZON_GAP_FRAMES,
             timeScale: JEV_TIME_SCALE,
             translator: JevTranslator.VERSION
         });
@@ -192,13 +198,14 @@ class JevScene extends Scene {
     // answer lands. A cold connection costs 700-850 ms and the bird falls from
     // height/2 to the ground in a few dozen frames, so taking off blind is taking
     // off dead. The warm start asks about now (lead 0), because a frozen world is
-    // not going anywhere and predicting it forward would only be a lie.
+    // not going anywhere and predicting it forward would only be a lie. It still asks both
+    // horizons, only with the gap closed, so there is one code path out of here.
     beginWarmStart() {
         this.waitingForPilot = true;
 
         this.nextPipe = this.selectNextPipe();
 
-        if (this.sendNow(0)) this.lastSendMs = jevNow();
+        if (this.sendNow(0, 0)) this.lastSendMs = jevNow();
     }
 
     update() {
@@ -281,10 +288,9 @@ class JevScene extends Scene {
         this.maybeSend();
     }
 
-    //the only place that flaps; the era counter is what makes old answers droppable
+    //the only place that flaps; everything still held is judged on its own premise later
     doFlap() {
         this.bird.jump();
-        this.flapSeq++;
         this.framesSinceFlap = 0;
 
         this.writeTrace({ t: "flap", frame: this.frame });
@@ -354,36 +360,52 @@ class JevScene extends Scene {
         if (!this.client.canSend()) return;
 
         //a skipped send must not eat the tick
-        if (this.sendNow(this.leadFrames())) this.lastSendMs = jevNow();
+        if (this.sendNow(this.leadFrames(), JEV_HORIZON_GAP_FRAMES)) this.lastSendMs = jevNow();
     }
 
-    //the single door out: every request is described, tagged and traced here
-    sendNow(leadFrames) {
-        let description = JevTranslator.describeScene(this.buildInput(), leadFrames, JEV_DT);
+    // The single door out: every request is described, tagged and traced here. One send
+    // carries two snapshots of the same flight, `now` at the lead and `later` a gap behind
+    // it, and one question per snapshot. The tag remembers, per horizon, the frame the
+    // answer belongs to and the words it was asked about.
+    sendNow(leadFrames, gapFrames) {
+        let leads = [
+            { key: "now", frames: leadFrames },
+            { key: "later", frames: leadFrames + (gapFrames || 0) }
+        ];
+
+        let description = JevTranslator.describeHorizons(this.buildInput(), leads, JEV_DT);
         if (description == null) return 0;
 
-        let targetFrame = this.frame + leadFrames;
+        let asked = {};
+        description.snapshots.forEach(snapshot => {
+            asked[snapshot.key] = {
+                targetFrame: this.frame + snapshot.frames,
+                leadFrames: snapshot.frames,
+                fields: snapshot.fields
+            };
+        });
 
-        let reqId = this.client.send(description.state, JevQuestions.build(), {
+        let reqId = this.client.send(description.state, JevQuestions.build(JevQuestions.HORIZONS), {
             runId: this.runId,
-            flapSeq: this.flapSeq,
             sentFrame: this.frame,
-            targetFrame: targetFrame
+            asked: asked
         });
 
         if (!reqId) return 0;
 
-        this.lastSentFields = description.fields;
+        //the panel shows the near snapshot, that is the one the lead was aimed at
+        this.lastSentFields = asked.now.fields;
         this.lastSentLead = leadFrames;
 
         this.writeTrace({
             t: "send",
             frame: this.frame,
             reqId: reqId,
-            targetFrame: targetFrame,
+            targetFrame: asked.now.targetFrame,
+            laterFrame: asked.later.targetFrame,
             leadFrames: leadFrames,
             leadMs: Math.round(this.leadMs),
-            fields: description.fields,
+            fields: asked.now.fields,
             actual: {
                 birdY: jevRound2(this.bird.pos.y),
                 vel: jevRound2(this.bird.velocity),
@@ -403,14 +425,14 @@ class JevScene extends Scene {
         if (this.sceneManager.getActiveScene() !== this) return;
         if (document.visibilityState !== "visible") return;
 
-        this.sendNow(0);
+        this.sendNow(0, 0);
     }
     //#endregion
 
     //#region answering
-    // Empty the inbox. An answer is measured first (it teaches the lead), then either
-    // dropped for being about another flight or another flap era, or held until the
-    // frame it was asked about comes around.
+    // Empty the inbox. An answer is measured first (it teaches the lead), then split into
+    // one candidate per horizon. Each candidate waits for its own frame and is judged there
+    // on its own premise, so nothing is decided here.
     drainAnswers() {
         let message = this.client.takeAnswer();
         while (message != null) {
@@ -419,25 +441,30 @@ class JevScene extends Scene {
             //every answer measures the network, even the ones we throw away
             this.leadMs = this.leadMs + JEV_LEAD_ALPHA * (message.latencyMs - this.leadMs);
 
-            let decision = (message.answers && message.answers.decision) ? message.answers.decision : {};
+            let answers = message.answers || {};
+            let asked = tag.asked || {};
+            let choices = {};
             let outcome;
 
             if (tag.runId !== this.runId) {
                 outcome = "discarded";
                 this.client.stats.discarded++;
-            } else if (tag.flapSeq !== this.flapSeq) {
-                //the bird flapped after we asked, so this is about a bird that no longer exists
-                outcome = "superseded";
-                this.client.stats.superseded++;
             } else {
                 outcome = "held";
-                this.client.stats.held++;
-                this.held.push({
-                    reqId: message.reqId,
-                    targetFrame: tag.targetFrame,
-                    choice: decision.choice,
-                    confidence: decision.confidence,
-                    probabilities: decision.probabilities
+                Object.keys(asked).forEach(key => {
+                    let answer = answers[key] || {};
+                    choices[key] = answer.choice != null ? answer.choice : null;
+
+                    this.client.stats.held++;
+                    this.held.push({
+                        reqId: message.reqId,
+                        key: key,
+                        targetFrame: asked[key].targetFrame,
+                        askedFields: asked[key].fields,
+                        choice: answer.choice,
+                        confidence: answer.confidence,
+                        probabilities: answer.probabilities
+                    });
                 });
             }
 
@@ -446,9 +473,7 @@ class JevScene extends Scene {
                 frame: this.frame,
                 reqId: message.reqId,
                 latencyMs: message.latencyMs,
-                choice: decision.choice != null ? decision.choice : null,
-                probs: decision.probabilities || null,
-                confidence: decision.confidence != null ? decision.confidence : null,
+                choices: choices,
                 outcome: outcome
             });
             this.events++;
@@ -457,23 +482,38 @@ class JevScene extends Scene {
         }
     }
 
-    // Spend whatever is due this frame, oldest target first. A FLAP ends the pass:
-    // everything still held was asked about the era that just ended.
-    // Returns how many answers were applied, the warm start and the step keys look at that.
+    //the words the world is in right now: what every due candidate is checked against
+    currentFields() {
+        let description = JevTranslator.describeScene(this.buildInput(), 0, JEV_DT);
+        return description != null ? description.fields : null;
+    }
+
+    // Spend whatever is due this frame, oldest target first. A candidate is spent when the
+    // words it was asked about still describe the bird; otherwise the world moved on under
+    // it and it counts as superseded. One frame never flaps twice: after a flap the rest of
+    // this frame's candidates go back on the pile and get a fresh look next frame, where the
+    // premise check usually rejects them on its own because the bird is rising now.
+    // Returns how many candidates were applied; the warm start and the step keys read that.
     applyHeld() {
         if (this.held.length === 0) return 0;
 
         this.held.sort((a, b) => a.targetFrame - b.targetFrame);
 
         let applied = 0;
+        let flapped = false;
+        let deferred = [];
+
+        //one describeScene per frame is plenty, the world only moves in stepFrame()
+        let current = null;
+        let haveCurrent = false;
 
         while (this.held.length > 0) {
-            let answer = this.held[0];
-            if (answer.targetFrame > this.frame) break;
+            let candidate = this.held[0];
+            if (candidate.targetFrame > this.frame) break;
 
             this.held.shift();
 
-            let lateBy = this.frame - answer.targetFrame;
+            let lateBy = this.frame - candidate.targetFrame;
 
             //too late to be about this bird any more
             if (lateBy > JEV_LATE_FRAMES) {
@@ -481,8 +521,36 @@ class JevScene extends Scene {
                 this.writeTrace({
                     t: "stale",
                     frame: this.frame,
-                    reqId: answer.reqId,
-                    targetFrame: answer.targetFrame
+                    reqId: candidate.reqId,
+                    key: candidate.key,
+                    targetFrame: candidate.targetFrame
+                });
+                this.events++;
+                continue;
+            }
+
+            //a flap already landed this frame, this one gets a fresh look on the next
+            if (flapped) {
+                deferred.push(candidate);
+                continue;
+            }
+
+            if (!haveCurrent) {
+                current = this.currentFields();
+                haveCurrent = true;
+            }
+
+            if (current == null || !JevTranslator.premiseHolds(candidate.askedFields, current)) {
+                this.client.stats.superseded++;
+                this.writeTrace({
+                    t: "superseded",
+                    frame: this.frame,
+                    reqId: candidate.reqId,
+                    key: candidate.key,
+                    targetFrame: candidate.targetFrame,
+                    reason: "premise",
+                    asked: candidate.askedFields,
+                    now: current
                 });
                 this.events++;
                 continue;
@@ -491,38 +559,35 @@ class JevScene extends Scene {
             this.client.stats.applied++;
             applied++;
             this.lastApplied = {
-                reqId: answer.reqId,
-                choice: answer.choice,
-                confidence: answer.confidence,
-                probabilities: answer.probabilities,
+                reqId: candidate.reqId,
+                key: candidate.key,
+                choice: candidate.choice,
+                confidence: candidate.confidence,
+                probabilities: candidate.probabilities,
                 lateBy: lateBy
             };
 
             this.writeTrace({
                 t: "apply",
                 frame: this.frame,
-                reqId: answer.reqId,
-                targetFrame: answer.targetFrame,
-                choice: answer.choice,
+                reqId: candidate.reqId,
+                key: candidate.key,
+                targetFrame: candidate.targetFrame,
+                choice: candidate.choice,
                 lateBy: lateBy
             });
             this.events++;
 
-            //WAIT costs nothing, FLAP moves the bird and ends the era
-            if (answer.choice === JevQuestions.FLAP) {
+            //WAIT costs nothing, FLAP moves the bird and closes this frame for flapping
+            if (candidate.choice === JevQuestions.FLAP) {
                 this.doFlap();
-                this.supersedeHeld();
-                break;
+                flapped = true;
             }
         }
 
-        return applied;
-    }
+        if (deferred.length > 0) this.held = deferred.concat(this.held);
 
-    //the flap moved the bird, so nothing that was asked before it is worth spending
-    supersedeHeld() {
-        this.client.stats.superseded += this.held.length;
-        this.held = [];
+        return applied;
     }
     //#endregion
 
@@ -594,6 +659,7 @@ class JevScene extends Scene {
                 leadFrames: this.lastSentLead
             },
             decision: applied != null ? {
+                key: applied.key,
                 choice: applied.choice,
                 confidence: applied.confidence,
                 probabilities: applied.probabilities
@@ -601,9 +667,11 @@ class JevScene extends Scene {
             lastApplied: applied,
             meta: {
                 inFlight: this.client.inFlight + " / " + JEV_MAX_IN_FLIGHT,
+                candidates: "held " + this.held.length,
                 sent: stats.requests,
                 applied: stats.applied,
-                superseded: stats.superseded + (stats.discarded > 0 ? " (+" + stats.discarded + " old run)" : ""),
+                superseded: stats.superseded + " (premise)" +
+                    (stats.discarded > 0 ? " (+" + stats.discarded + " old run)" : ""),
                 stale: stats.stale,
                 lead: Math.round(this.leadMs) + " ms (" + this.leadFrames() + "f)",
                 latency: stats.lastLatencyMs + " ms, upstream " +
