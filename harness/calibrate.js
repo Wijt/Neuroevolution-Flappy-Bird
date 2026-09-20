@@ -103,7 +103,7 @@ const CASES = [
     { name: "gap well below the bird", expect: ["let_it_fall"], input: scene({ gapCenter: 600, birdY: 400, pipe: PIPE_SOME_DISTANCE }) },
     { name: "low over the ground, falling", expect: ["two_hops", "climb_hard"], input: scene({ birdY: 700, v: 3, pipe: PIPE_VERY_FAR }) },
     { name: "high near the ceiling, falling", expect: ["let_it_fall"], input: scene({ birdY: 40, v: 3, pipe: PIPE_FAR }) },
-    { name: "slightly low, falling, pipe in front", expect: ["let_it_fall", "one_hop"], input: scene({ offset: 10, v: 5.5, pipe: PIPE_IN_FRONT }) },
+    { name: "centred, falling, pipe in front", expect: ["one_hop"], input: scene({ offset: 0, v: 5.5, pipe: PIPE_IN_FRONT }) },
     { name: "between pipes, a little low, next opening well above", expect: ["one_hop", "two_hops", "climb_hard"], input: scene({ offset: 25, v: 3, pipe: PIPE_BETWEEN, followingGapCenter: 280 }) },
     { name: "between pipes, next opening well below", expect: ["let_it_fall"], input: scene({ offset: 0, v: 0, pipe: PIPE_BETWEEN, followingGapCenter: 520 }) }
 ];

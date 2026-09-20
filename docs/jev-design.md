@@ -47,7 +47,7 @@ actions is fixed and tiny, Jev chooses among them alone, and code only spaces th
 
 File: `data/jev/scene-translator.js`. Global `JevTranslator`, also `module.exports`.
 
-`JevTranslator.VERSION = "1.4.0"`.
+`JevTranslator.VERSION = "1.5.0"`.
 
 ### Input
 
@@ -98,7 +98,7 @@ Verbatim:
 > The bird flies right at constant speed and cannot slow down or turn. Gravity pulls it down
 > constantly. A flap gives one short upward hop, after which it falls again; flapping repeatedly
 > stacks hops upward. A single hop from the middle of an opening carries the bird all the way up
-> into the top pipe, so the bird should only hop when it is below the middle of the opening.
+> into the top pipe, so the bird should only hop when it is below the middle of the opening. Passing a pipe takes a while: a bird that enters the opening falling and does not flap while inside drops out through the bottom pipe before it is through.
 > Pipes arrive from the right; each has a top and bottom pipe with an opening between them.
 > Touching a pipe, the ground or the ceiling ends the flight.
 
@@ -166,7 +166,7 @@ groundY: 750, canvasHeight: 800 }` gives:
 
 ```json
 {
-  "rules": "The bird flies right at constant speed and cannot slow down or turn. Gravity pulls it down constantly. A flap gives one short upward hop, after which it falls again; flapping repeatedly stacks hops upward. A single hop from the middle of an opening carries the bird all the way up into the top pipe, so the bird should only hop when it is below the middle of the opening. Pipes arrive from the right; each has a top and bottom pipe with an opening between them. Touching a pipe, the ground or the ceiling ends the flight.",
+  "rules": "The bird flies right at constant speed and cannot slow down or turn. Gravity pulls it down constantly. A flap gives one short upward hop, after which it falls again; flapping repeatedly stacks hops upward. A single hop from the middle of an opening carries the bird all the way up into the top pipe, so the bird should only hop when it is below the middle of the opening. Passing a pipe takes a while: a bird that enters the opening falling and does not flap while inside drops out through the bottom pipe before it is through. Pipes arrive from the right; each has a top and bottom pipe with an opening between them. Touching a pipe, the ground or the ceiling ends the flight.",
   "bird": {
     "vertical_motion": "falling",
     "place_in_gap": "close to the bottom pipe edge",
@@ -193,7 +193,7 @@ File: `data/jev/jev-questions.js`. Global `JevQuestions`, also `module.exports`.
         instructions: "For the next short stretch of flight, which maneuver should the bird make? Flapping is the only way up; not flapping is the only way down.",
         criteria: {
             let_it_fall: "descend: make no flap and let gravity bring the bird down; the choice when the bird is at or above the middle of the opening, already rising, or close to the ceiling",
-            one_hop: "one flap, lifting the bird by about one hop; the choice when the bird is a little below the middle and falling, or about one hop below the middle",
+            one_hop: "one flap, lifting the bird by about one hop; the choice when the bird is a little below the middle and falling, or about one hop below the middle, or in the middle of the opening and falling with the pipe right in front of the bird or between the pipes",
             two_hops: "two flaps in quick succession, lifting the bird by about two hops; the choice when the bird is about two hops below the opening",
             climb_hard: "three flaps in quick succession, lifting the bird by about three hops; the choice when the bird is several hops below the opening or close to the ground"
         }
@@ -309,6 +309,36 @@ browser sees `{ error: "upstream_error", status }`, 504 on timeout, 502 on netwo
 In Docker the key is passed at run time: `docker run -e TYPESAFE_API_KEY=... -p 3000:3000 ...`.
 It is never baked into the image. `.env` is in `.dockerignore` and `.gitignore`.
 
+### Where the latency goes
+
+Measured from this machine on Sep 20 2026. The API host resolves into AWS Oregon.
+
+| Stage | Measured | Meaning |
+| --- | --- | --- |
+| TCP connect | 235 ms | one round trip, Turkey to the US west coast |
+| TLS handshake | +250 ms | a second round trip, cold connections only |
+| Warm request | 305 to 345 ms | one round trip plus 70 to 100 ms of model time |
+| Cold request | 750 to 1030 ms | DNS + TCP + TLS + request |
+
+Three quarters of an answer is geography and a quarter is Jev. The API and the JS SDK offer
+one HTTP POST endpoint and nothing else: no websocket, no streaming, no regional endpoints.
+A websocket would not help, since a warm HTTP connection already costs one round trip per
+request. Moving the proxy to the USA would not help either, because the browser stays here
+and the loop is browser to proxy to API and back. The only way to see Jev at its native
+100 to 150 ms is to run the game loop in the USA, which `npm run simulate` on a US machine
+does.
+
+Question count changes tokens, not latency: three questions cost 914 input tokens, one costs
+687, both answer in the same time. `read` and `danger` are panel-only and could be asked less
+often to save tokens.
+
+### Keep-alive
+
+Node drops idle upstream sockets after 4 seconds, so every flight that started after a pause
+paid the cold price. The server now installs an undici Agent with a 60 second keep-alive.
+Measured: a request after 10 s idle took 337 ms and after 25 s idle 396 ms, where before both
+would have been about 900 ms. The first request after a long idle is still cold; the warm
+start covers it.
 ## Calibration
 
 Run the offline harness before wiring the game loop:
@@ -402,8 +432,16 @@ it is exactly right, and Jev could not tell the two apart. The bands below the m
 "a little below" (10 to 40), "about one hop below" (40 to 80), "about two hops below" (80 to
 125) and "several hops below" (over 125), and each maneuver criterion names the depth it is
 for. The middle band narrowed to 10 px so a hop from "in the middle" is never asked for.
-Harness cases 4, 8, 10, 13 and 19 had their expectations aligned with the hop bands. This is
-the version wired into the game.
+Harness cases 4, 8, 10, 13 and 19 had their expectations aligned with the hop bands.
+
+**v1.5.0, pipe entry.** JSON only, 25/25, mean margin 0.91. A browser trace (score 2 flight)
+showed the bird entering the opening at the centre, falling at speed 5, with Jev answering
+"let it fall" as the rules told it to, and clipping the bottom pipe corner by 2.5 px seven
+frames later. Every reading in that trace was correct; what was missing was that crossing a
+pipe takes about 25 game frames at 1/4 speed, and a bird entering falling without a flap
+drops out of the opening before it is through. RULES_TEXT now says so, and `one_hop` covers
+"in the middle and falling with the pipe right in front or between the pipes". Harness case
+23 became exactly that scene, expecting `one_hop`. This is the version wired into the game.
 
 ### Flight log (headless simulator)
 
@@ -427,6 +465,9 @@ the version wired into the game.
   0 and 2. Scale 4 tick 3: 1 and 0. Scale 6 tick 5: 3 and 3, over a minute of flight each.
 - **Slow time, v1.4.0.** Scale 4 tick 5: scores 2 and 1, 27 to 29 s each. Scale 6 tick 5:
   2 and 3, 55 to 68 s each. Shipped as scale 4, tick 5: a pipe every 8 s, still watchable.
+- **Slow time, v1.4.0, tick 3.** Scale 4: scores 2, 2, 2 on three seeds, at about 60 percent
+  more requests per minute. Not adopted yet.
+- **Slow time, v1.5.0.** Scale 4 tick 5: scores 3, 0, 4 on three seeds, 19 to 52 s each.
 
 The conclusion: the description is good enough for Jev to fly. At normal game speed the
 physics outrun a 300 to 650 ms round trip, so the jev scene runs at 1/4 speed with a 5-frame
@@ -458,12 +499,13 @@ the prose template. Bump the patch number for wording that does not move a bound
 minor number when a threshold moves or a phrase changes meaning. Bump the major number when the
 state shape or the question set changes.
 
-Current version is 1.4.0. 1.1.0 carried the `next_opening` key rename, the prose change for
+Current version is 1.5.0. 1.1.0 carried the `next_opening` key rename, the prose change for
 being between the pipes, and the `maneuver` question that replaced the `flap` noul. 1.2.0
 made the two extreme `place_in_gap` phrases and all `next_opening` phrases bird-relative and
 reworded the maneuver criteria. 1.3.x added the hop physics sentence to RULES_TEXT and moved
 the `one_hop` / `let_it_fall` boundary to the middle of the opening. 1.4.0 sized the bands
-below the middle in hops and tied each maneuver to a band. By the rule above a question set change is a major bump; these
+below the middle in hops and tied each maneuver to a band. 1.5.0 added the pipe-crossing sentence
+to RULES_TEXT and the pipe-entry clause to `one_hop`. By the rule above a question set change is a major bump; these
 stayed at minor because the scene was not wired into the game yet and no calibration of the
 new design had been published. The next question set change bumps the major number.
 

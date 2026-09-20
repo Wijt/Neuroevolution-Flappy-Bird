@@ -2,6 +2,16 @@ require("dotenv").config();
 
 const path = require("path");
 const express = require("express");
+const { Agent, setGlobalDispatcher } = require("undici");
+
+// Every request to TypeSafe costs one round trip on a warm connection and three on a cold
+// one (DNS + TCP + TLS, about 750 ms from here). Node drops idle sockets after 4 s, so a
+// flight that starts after a pause always paid the cold price. Keep sockets around longer.
+setGlobalDispatcher(new Agent({
+    keepAliveTimeout: 60 * 1000,
+    keepAliveMaxTimeout: 10 * 60 * 1000,
+    connections: 4
+}));
 
 const PORT = process.env.PORT || 3000;
 const API_KEY = process.env.TYPESAFE_API_KEY;
