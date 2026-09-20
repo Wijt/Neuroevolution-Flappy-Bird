@@ -1,37 +1,54 @@
 "use strict";
 
 /*
- * Headless flight simulator for the Jev pilot, v2.
+ * Headless flight simulator for the Jev pilot, contract v2.1.
  *
  * Runs the JevScene loop without p5 and without a browser: a real-time 60 fps
- * timeline, the real physics from data/flappybird/*, the real v2 scene
- * translator and the real v2 question set. The loop never waits for an answer:
- * a request is fired on a wall-clock cadence, the frames keep ticking, and the
- * answer is drained at the top of whichever frame it happens to arrive on.
+ * timeline, the real physics from data/flappybird/*, the real v2.1 scene
+ * translator and the real v2.1 question set. The loop never waits for an
+ * answer: a request is fired on a wall-clock cadence, the frames keep ticking,
+ * and the answer is drained at the top of whichever frame it happens to arrive
+ * on.
  *
- * The v2 contract moves the latency problem from the game into the request.
- * Instead of asking "what should the bird do now" and acting on the answer
- * however late it lands, the harness predicts the world `leadFrames` ahead --
- * with the bird left alone -- describes THAT world, and holds the answer until
- * the frame it was about (targetFrame). Lead is an EMA of measured latency, so
- * the pilot answers about the moment its answer will arrive.
+ * v2 moved the latency problem from the game into the request: predict the
+ * world `leadFrames` ahead with the bird left alone, describe THAT world, and
+ * hold the answer until the frame it was about (targetFrame).
+ *
+ * v2.1 adds the two things this harness is here to measure:
+ *
+ *   1. Freshness by premise, not by flap. An answer is no longer thrown away
+ *      just because the bird flapped in the meantime. When a held candidate
+ *      comes due, the harness re-describes the world at lead 0 and asks
+ *      JevTranslator.premiseHolds(askedFields, currentFields): if the words the
+ *      answer rested on (position, and motion where it matters) still hold, the
+ *      answer is still about the world the bird is in, so it is applied.
+ *      Otherwise it is superseded with reason `premise`.
+ *
+ *   2. Two horizons per request. One request carries a snapshot at leadFrames
+ *      (`now`) and another at leadFrames + --horizon-gap (`later`), with one
+ *      question per horizon. Each answer yields two candidates, so the pilot
+ *      can commit to a second flap before the next request lands -- which is
+ *      what lets the bird string flaps together and actually climb.
+ *
+ * --horizon-gap 0 disables the second horizon and falls back to the v2 single
+ * `decision` question, for A/B comparison against the two-horizon run.
  *
  *   node harness/simulate.js [--mock] [--seed=N] [--runs=N] [--max-frames=N]
  *                            [--tick-ms=N] [--max-in-flight=N] [--late-frames=N]
  *                            [--lead-ms=N] [--no-lead] [--time-scale=N]
- *                            [--height=N] [--width=N] [--quiet]
+ *                            [--horizon-gap=N] [--height=N] [--width=N] [--quiet]
  *
- * An answer is only good for the world it described, so it is thrown away when
- * the bird flapped after the question was asked (superseded), and when it turns
- * up more than --late-frames after its targetFrame (stale).
+ * At most one FLAP is applied per frame; any candidate still held behind it
+ * waits for the next frame and is judged again from scratch.
  *
- * --mock swaps the transport for a local fake (350 +-50 ms, a policy that
- * mirrors the FLAP criterion) so the whole pipeline can be exercised without a
- * key. Every run writes a JSONL trace under <os tmpdir>/flappy-jev-sim/.
+ * --mock swaps the transport for a local fake (350 +-120 ms, the FLAP criterion
+ * applied to each horizon's snapshot) so the whole pipeline can be exercised
+ * without a key. Every run writes a JSONL trace under
+ * <os tmpdir>/flappy-jev-sim/.
  *
- * The `send` timeline line shows the PREDICTED scene (y, v, position, motion,
- * distance) -- that is what Jev is being asked about. The trace keeps the
- * unpredicted numbers beside it under `actual`.
+ * The `send` timeline line shows the PREDICTED scenes -- that is what Jev is
+ * being asked about. The trace keeps the unpredicted numbers beside them under
+ * `actual`.
  *
  * Exit codes: 0 ran, 2 config/transport failure.
  */
@@ -68,11 +85,18 @@ const ENDPOINT = "https://api.typesafe.ai/v1/systemone";
 const MODEL = "jev-latest";
 const REQUEST_TIMEOUT_MS = 10000;
 
+// wider than v2's +-50 ms: the point of v2.1 is that a late answer can still be
+// good, so the mock has to produce plenty of late ones
 const MOCK_LATENCY_MS = 350;
-const MOCK_JITTER_MS = 50;
+const MOCK_JITTER_MS = 120;
 
 const LEAD_ALPHA = 0.3;
 const LEAD_INITIAL_MS = 400;
+
+const DEFAULT_HORIZON_GAP = 8;
+
+const SINGLE_QUESTION_ID = "decision";
+const PRIMARY_HORIZON = "now";
 
 const FLAP = JevQuestions.FLAP;
 const WAIT = JevQuestions.WAIT;
@@ -92,6 +116,7 @@ function parseArgs(argv) {
         leadMs: null,
         noLead: false,
         timeScale: 1,
+        horizonGap: DEFAULT_HORIZON_GAP,
         height: DEFAULT_HEIGHT,
         width: null
     };
@@ -105,6 +130,7 @@ function parseArgs(argv) {
         "--late-frames": "lateFrames",
         "--lead-ms": "leadMs",
         "--time-scale": "timeScale",
+        "--horizon-gap": "horizonGap",
         "--height": "height",
         "--width": "width"
     };
@@ -224,6 +250,54 @@ function prob(p) {
 
 function round2(n) {
     return Math.round(n * 100) / 100;
+}
+
+// "inside the gap, lower half" -> "lower half"; the other two are short already
+function shortPosition(position) {
+    const text = String(position || "?");
+    const prefix = "inside the gap, ";
+    return text.indexOf(prefix) === 0 ? text.slice(prefix.length) : text;
+}
+
+// The longest run of frames over which the bird gained altitude, and how long it
+// took: from a local minimum of altitude (a local MAXIMUM of y, because y grows
+// downward) to the following local maximum of altitude. This is the metric v2.1
+// targets -- a pilot that can only land one flap per round trip never gets a
+// long climb, because gravity eats the gain between answers.
+function longestClimb(ys) {
+    const best = { rise: 0, frames: 0, fromFrame: 0, toFrame: 0 };
+    if (ys.length < 2) return best;
+
+    let startIndex = 0;
+    let climbing = false;
+
+    function close(endIndex) {
+        if (!climbing) return;
+        const rise = ys[startIndex] - ys[endIndex];
+        if (rise > best.rise) {
+            best.rise = rise;
+            best.frames = endIndex - startIndex;
+            best.fromFrame = startIndex + 1;
+            best.toFrame = endIndex + 1;
+        }
+        climbing = false;
+    }
+
+    for (let i = 1; i < ys.length; i++) {
+        if (ys[i] < ys[i - 1]) {
+            // y falling = bird rising
+            if (!climbing) {
+                climbing = true;
+                startIndex = i - 1;
+            }
+        } else if (ys[i] > ys[i - 1]) {
+            close(i - 1);
+        }
+        // a flat frame neither starts nor ends a climb
+    }
+    close(ys.length - 1);
+
+    return best;
 }
 
 /* ------------------------------------------------------------------ world */
@@ -376,18 +450,26 @@ function realTransport(apiKey) {
 }
 
 // The mock mirrors the FLAP criterion from jev-questions.js exactly, reading the
-// same two phrases Jev reads. It is not a smarter pilot than Jev, it is the same
-// pilot with no network and no judgement -- which is what makes it useful: any
-// hold / supersede / stale behaviour a mock run shows is the harness, not the
-// model.
-function mockChoice(state) {
-    const bird = (state && state.bird) || {};
+// same two phrases Jev reads, once per question. It is not a smarter pilot than
+// Jev, it is the same pilot with no network and no judgement -- which is what
+// makes it useful: any hold / supersede / stale behaviour a mock run shows is
+// the harness, not the model.
+function mockChoice(snapshot) {
+    const bird = (snapshot && snapshot.bird) || {};
     const position = String(bird.position || "");
     const motion = String(bird.motion || "");
 
     if (position === "below the gap") return FLAP;
     if (position === "inside the gap, lower half" && motion !== "rising") return FLAP;
     return WAIT;
+}
+
+// A single-horizon request carries its snapshot at the top level and asks one
+// `decision` question about it; a two-horizon request nests one snapshot per
+// horizon key and asks one question per key.
+function snapshotFor(state, questionId) {
+    if (questionId === SINGLE_QUESTION_ID) return state;
+    return state != null ? state[questionId] : null;
 }
 
 function mockTransport(random) {
@@ -404,21 +486,23 @@ function mockTransport(random) {
             const timer = setTimeout(function () {
                 if (signal != null) signal.removeEventListener("abort", onAbort);
 
-                const choice = mockChoice(state);
-                const p = 0.91;
-                const probabilities = {};
-                probabilities[FLAP] = choice === FLAP ? p : 1 - p;
-                probabilities[WAIT] = choice === WAIT ? p : 1 - p;
+                const answers = {};
+                Object.keys(questions).forEach(function (questionId) {
+                    const choice = mockChoice(snapshotFor(state, questionId));
+                    const p = 0.91;
+                    const probabilities = {};
+                    probabilities[FLAP] = choice === FLAP ? p : 1 - p;
+                    probabilities[WAIT] = choice === WAIT ? p : 1 - p;
+                    answers[questionId] = {
+                        choice: choice,
+                        confidence: p,
+                        probabilities: probabilities
+                    };
+                });
 
                 resolve({
                     body: {
-                        answers: {
-                            decision: {
-                                choice: choice,
-                                confidence: p,
-                                probabilities: probabilities
-                            }
-                        },
+                        answers: answers,
                         usage: { input_tokens: 0, output_tokens: 0 }
                     },
                     modelMs: null
@@ -615,6 +699,12 @@ class SimRun {
 
         this.tickMs = opts.tickMs;
         this.lateFrames = opts.lateFrames;
+
+        this.horizonGap = opts.horizonGap;
+        this.horizonKeys = this.horizonGap > 0
+            ? JevQuestions.HORIZONS.slice()
+            : [PRIMARY_HORIZON];
+
         this.leadMode = opts.leadMode;
         this.leadMs = this.leadMode === "none"
             ? 0
@@ -622,17 +712,18 @@ class SimRun {
 
         this.frame = 0;
         this.runId = runIndex + 1;
-        this.flapSeq = 0;
-        this.framesSinceFlap = 999;
         this.lastSendMs = -Infinity;
 
+        // candidates waiting for their targetFrame
         this.held = [];
 
         // bookkeeping the game itself does not need
         this.flaps = 0;
+        this.candidatesHeld = 0;
         this.applied = 0;
         this.appliedFlap = 0;
         this.appliedWait = 0;
+        this.appliedByHorizon = {};
         this.superseded = 0;
         this.stale = 0;
         this.discarded = 0;
@@ -641,12 +732,13 @@ class SimRun {
         this.modelMsValues = [];
         this.leadFramesValues = [];
         this.lateByValues = [];
+        this.birdYs = [];
         this.death = null;
         this.warmStartMs = null;
 
         this.write({
             t: "header",
-            version: 2,
+            version: "2.1",
             seed: seed,
             runId: this.runId,
             tickMs: this.tickMs,
@@ -654,6 +746,9 @@ class SimRun {
             lateFrames: this.lateFrames,
             timeScale: this.timeScale,
             leadMode: this.leadMode,
+            horizonGap: this.horizonGap,
+            horizons: this.horizonKeys,
+            freshness: "premise",
             translator: JevTranslator.VERSION
         });
     }
@@ -687,15 +782,19 @@ class SimRun {
         });
     }
 
-    describe(leadFrames) {
-        return JevTranslator.describeScene({
+    input() {
+        return {
             birdX: this.bird.pos.x,
             birdY: this.bird.pos.y,
             birdVelocity: this.bird.velocity,
             birdRadius: JEV_COLLISION_R,
             groundY: this.height - GROUND_HEIGHT,
             pipes: this.pipeList()
-        }, leadFrames, this.dt);
+        };
+    }
+
+    describe(leadFrames) {
+        return JevTranslator.describeScene(this.input(), leadFrames, this.dt);
     }
 
     leadFrames() {
@@ -720,14 +819,13 @@ class SimRun {
         this.drainAnswers();
         this.applyHeld();
 
-        this.framesSinceFlap++;
-
         const dt = this.dt;
         this.pipes.forEach(function (pipe) {
             pipe.update(dt);
         });
 
         this.bird.update(this.height, this.dt);
+        this.birdYs.push(this.bird.pos.y);
 
         this.nextPipe = this.selectNextPipe();
 
@@ -768,8 +866,6 @@ class SimRun {
 
     doFlap() {
         this.bird.jump();
-        this.flapSeq++;
-        this.framesSinceFlap = 0;
         this.flaps++;
 
         this.write({ t: "flap", frame: this.frame });
@@ -801,10 +897,23 @@ class SimRun {
 
     /* --------------------------------------------------------- answers */
 
+    answerOf(message, questionId) {
+        const answer = (message.answers && message.answers[questionId]) || {};
+        return {
+            choice: answer.choice !== undefined ? answer.choice : null,
+            confidence: answer.confidence !== undefined ? answer.confidence : null,
+            probabilities: answer.probabilities || null
+        };
+    }
+
+    // Every answered request turns into one candidate per horizon. Nothing is
+    // judged here: freshness is decided at the targetFrame, against the premise
+    // the question was asked under.
     drainAnswers() {
         let message = this.client.takeAnswer();
         while (message != null) {
             const tag = message.tag || {};
+            const horizons = tag.horizons || [];
 
             this.noteLatency(message.latencyMs);
 
@@ -812,43 +921,37 @@ class SimRun {
             this.latenciesFrames.push(this.frame - tag.sentFrame);
             if (message.modelMs != null) this.modelMsValues.push(message.modelMs);
 
+            const choices = horizons.map(function (h) {
+                return { key: h.key, answer: this.answerOf(message, h.questionId) };
+            }, this);
+
             let outcome;
             if (tag.runId !== this.runId) {
                 // an answer about a flight that is already over is worthless
                 this.discarded++;
                 outcome = "discarded";
-            } else if (tag.flapSeq !== this.flapSeq) {
-                // the bird flapped after this question was asked, so the world it
-                // described never happened
-                this.superseded++;
-                outcome = "superseded";
             } else {
-                this.held.push({
-                    reqId: message.reqId,
-                    tag: tag,
-                    answer: this.decisionOf(message)
-                });
+                for (let i = 0; i < horizons.length; i++) {
+                    this.held.push({
+                        reqId: message.reqId,
+                        key: horizons[i].key,
+                        targetFrame: horizons[i].targetFrame,
+                        askedFields: horizons[i].fields,
+                        answer: choices[i].answer
+                    });
+                    this.candidatesHeld++;
+                }
                 outcome = "held";
             }
 
-            this.noteRecv(message, outcome);
+            this.noteRecv(message, choices, outcome);
 
             message = this.client.takeAnswer();
         }
     }
 
-    decisionOf(message) {
-        const decision = (message.answers && message.answers.decision) || {};
-        return {
-            choice: decision.choice !== undefined ? decision.choice : null,
-            confidence: decision.confidence !== undefined ? decision.confidence : null,
-            probabilities: decision.probabilities || null
-        };
-    }
-
-    noteRecv(message, outcome) {
+    noteRecv(message, choices, outcome) {
         const tag = message.tag || {};
-        const decision = this.decisionOf(message);
         const latencyFrames = this.frame - tag.sentFrame;
 
         this.write({
@@ -856,33 +959,45 @@ class SimRun {
             frame: this.frame,
             reqId: message.reqId,
             latencyMs: message.latencyMs,
+            latencyFrames: latencyFrames,
             modelMs: message.modelMs,
-            choice: decision.choice,
-            probs: decision.probabilities,
-            confidence: decision.confidence,
+            choices: choices.map(function (c) {
+                return {
+                    key: c.key,
+                    choice: c.answer.choice,
+                    confidence: c.answer.confidence,
+                    probs: c.answer.probabilities
+                };
+            }),
             outcome: outcome
         });
 
-        const p = decision.confidence != null
-            ? decision.confidence
-            : (decision.probabilities != null && decision.choice != null
-                ? decision.probabilities[decision.choice]
-                : null);
+        const text = choices.map(function (c) {
+            const p = c.answer.confidence != null
+                ? c.answer.confidence
+                : (c.answer.probabilities != null && c.answer.choice != null
+                    ? c.answer.probabilities[c.answer.choice]
+                    : null);
+            return c.key + " " + (c.answer.choice || "?") + " " + prob(p);
+        }).join(", ");
 
         this.line(frameTag(this.frame) + " recv " + pad("#" + message.reqId, 4) +
-            " (" + padLeft(latencyFrames, 2) + "f, " + padLeft(message.latencyMs, 4) + "ms" +
-            (message.modelMs != null ? ", model " + message.modelMs + "ms" : "") + ")" +
-            " " + pad(decision.choice || "?", 4) + " " + prob(p) +
-            " " + outcome);
+            " (" + padLeft(message.latencyMs, 3) + "ms" +
+            (message.modelMs != null ? ", model " + message.modelMs + "ms" : "") + ") " +
+            text + (outcome === "held" ? "" : " " + outcome));
     }
 
-    // Held answers come due at their targetFrame. Anything still in the future
-    // waits; anything too far in the past described a world that has already
-    // been overtaken.
+    // Held candidates come due at their targetFrame. Anything still in the
+    // future waits; anything too late is stale; everything else is judged on its
+    // premise -- if the words the question was asked under still describe the
+    // bird, the answer is still about the world the bird is in.
     applyHeld() {
         if (this.held.length === 0) return;
 
-        this.held.sort(function (a, b) { return a.tag.targetFrame - b.tag.targetFrame; });
+        this.held.sort(function (a, b) { return a.targetFrame - b.targetFrame; });
+
+        const current = this.describe(0);
+        const currentFields = current != null ? current.fields : null;
 
         const keep = [];
         let flapped = false;
@@ -890,32 +1005,19 @@ class SimRun {
         for (let i = 0; i < this.held.length; i++) {
             const item = this.held[i];
 
+            // at most one flap per frame: whatever is left waits for the next
+            // frame, where it is judged again against the world the flap made
             if (flapped) {
-                // a flap invalidates every other answer: they all described a
-                // bird that was going to be left alone
-                this.superseded++;
-                this.write({
-                    t: "recv",
-                    frame: this.frame,
-                    reqId: item.reqId,
-                    latencyMs: null,
-                    modelMs: null,
-                    choice: item.answer.choice,
-                    probs: item.answer.probabilities,
-                    confidence: item.answer.confidence,
-                    outcome: "superseded"
-                });
-                continue;
-            }
-
-            const targetFrame = item.tag.targetFrame;
-
-            if (targetFrame > this.frame) {
                 keep.push(item);
                 continue;
             }
 
-            const lateBy = this.frame - targetFrame;
+            if (item.targetFrame > this.frame) {
+                keep.push(item);
+                continue;
+            }
+
+            const lateBy = this.frame - item.targetFrame;
 
             if (lateBy > this.lateFrames) {
                 this.stale++;
@@ -923,25 +1025,56 @@ class SimRun {
                     t: "stale",
                     frame: this.frame,
                     reqId: item.reqId,
-                    targetFrame: targetFrame
+                    key: item.key,
+                    targetFrame: item.targetFrame,
+                    lateBy: lateBy
                 });
-                this.line(frameTag(this.frame) + " stale " + pad("#" + item.reqId, 4) +
-                    " ->" + frameTag(targetFrame) + " (" + lateBy + "f late)");
+                this.line(frameTag(this.frame) + " stale       " +
+                    pad("#" + item.reqId + "/" + item.key, 10) +
+                    " (" + lateBy + "f late)");
+                continue;
+            }
+
+            const holds = currentFields != null &&
+                JevTranslator.premiseHolds(item.askedFields, currentFields);
+
+            if (!holds) {
+                this.superseded++;
+                this.write({
+                    t: "superseded",
+                    frame: this.frame,
+                    reqId: item.reqId,
+                    key: item.key,
+                    targetFrame: item.targetFrame,
+                    reason: "premise",
+                    asked: item.askedFields != null
+                        ? { position: item.askedFields.position, motion: item.askedFields.motion }
+                        : null,
+                    current: currentFields != null
+                        ? { position: currentFields.position, motion: currentFields.motion }
+                        : null
+                });
+                this.line(frameTag(this.frame) + " superseded  " +
+                    pad("#" + item.reqId + "/" + item.key, 10) +
+                    " (premise)");
                 continue;
             }
 
             this.applied++;
+            this.appliedByHorizon[item.key] = (this.appliedByHorizon[item.key] || 0) + 1;
             this.lateByValues.push(Math.abs(lateBy));
 
             this.write({
                 t: "apply",
                 frame: this.frame,
                 reqId: item.reqId,
-                targetFrame: targetFrame,
+                key: item.key,
+                targetFrame: item.targetFrame,
                 choice: item.answer.choice,
                 lateBy: lateBy
             });
-            this.line(frameTag(this.frame) + " apply " + pad("#" + item.reqId, 4) +
+            this.line(frameTag(this.frame) + " apply       " +
+                pad("#" + item.reqId + "/" + item.key, 10) +
                 " " + pad(item.answer.choice || "?", 4) + " (" + lateBy + "f late)");
 
             if (item.answer.choice === FLAP) {
@@ -965,36 +1098,70 @@ class SimRun {
         if (now - this.lastSendMs < this.tickMs) return 0;
         if (!this.client.canSend()) return 0;
 
-        const reqId = this.sendNow(this.leadFrames());
+        const reqId = this.sendNow(this.leadFrames(), false);
 
         // a skipped send must not eat the cadence
         if (reqId) this.lastSendMs = now;
         return reqId;
     }
 
-    sendNow(leadFrames) {
-        const described = this.describe(leadFrames);
-        if (described == null) return 0;
+    // One request, one snapshot per horizon, one question per horizon.
+    // `single` forces the v2 shape (a lone `decision` question about one
+    // snapshot); --horizon-gap 0 does the same for the whole run.
+    sendNow(leadFrames, single) {
+        const useSingle = single || this.horizonGap === 0;
+
+        let state;
+        let questions;
+        let horizons;
+
+        if (useSingle) {
+            const described = this.describe(leadFrames);
+            if (described == null) return 0;
+
+            state = described.state;
+            questions = JevQuestions.build();
+            horizons = [{
+                key: PRIMARY_HORIZON,
+                questionId: SINGLE_QUESTION_ID,
+                frames: leadFrames,
+                targetFrame: this.frame + leadFrames,
+                fields: described.fields
+            }];
+        } else {
+            const leads = [
+                { key: JevQuestions.HORIZONS[0], frames: leadFrames },
+                { key: JevQuestions.HORIZONS[1], frames: leadFrames + this.horizonGap }
+            ];
+            const described = JevTranslator.describeHorizons(this.input(), leads, this.dt);
+            if (described == null) return 0;
+
+            state = described.state;
+            questions = JevQuestions.build(JevQuestions.HORIZONS);
+            horizons = described.snapshots.map(function (s) {
+                return {
+                    key: s.key,
+                    questionId: s.key,
+                    frames: s.frames,
+                    targetFrame: this.frame + s.frames,
+                    fields: s.fields
+                };
+            }, this);
+        }
 
         const leadMs = this.leadMode === "none" ? 0 : Math.round(this.leadMs);
-        const targetFrame = this.frame + leadFrames;
         const sentFrame = this.frame;
-        const flapSeq = this.flapSeq;
 
         const tag = {
             runId: this.runId,
             reqId: 0,
-            flapSeq: flapSeq,
             sentFrame: sentFrame,
-            targetFrame: targetFrame
+            horizons: horizons
         };
 
-        const reqId = this.client.send(described.state, JevQuestions.build(), tag);
+        const reqId = this.client.send(state, questions, tag);
         if (!reqId) return 0;
         tag.reqId = reqId;
-
-        const fields = described.fields;
-        const predicted = described.predicted;
 
         this.leadFramesValues.push(leadFrames);
 
@@ -1002,10 +1169,12 @@ class SimRun {
             t: "send",
             frame: sentFrame,
             reqId: reqId,
-            targetFrame: targetFrame,
             leadFrames: leadFrames,
             leadMs: leadMs,
-            fields: fields,
+            horizonGap: useSingle ? 0 : this.horizonGap,
+            horizons: horizons.map(function (h) {
+                return { key: h.key, frames: h.frames, targetFrame: h.targetFrame, fields: h.fields };
+            }),
             actual: {
                 birdY: round2(this.bird.pos.y),
                 vel: round2(this.bird.velocity),
@@ -1013,14 +1182,15 @@ class SimRun {
             }
         });
 
-        this.line(frameTag(sentFrame) + " send " + pad("#" + reqId, 4) +
-            " ->" + frameTag(targetFrame) +
-            " (lead " + leadFrames + "f/" + leadMs + "ms)" +
-            " y=" + Math.round(predicted.birdY) +
-            " v=" + predicted.birdVelocity.toFixed(1) +
-            " | " + fields.position +
-            " | " + fields.motion +
-            " | dist " + fields.distance);
+        const targets = horizons.map(function (h) { return frameTag(h.targetFrame); }).join("/");
+        const text = horizons.map(function (h, i) {
+            const f = h.fields;
+            return h.key + ": " + shortPosition(f.position) + " | " + f.motion +
+                (i === 0 ? " | dist " + f.distance : "");
+        }).join(" ; ");
+
+        this.line(frameTag(sentFrame) + " send        " + pad("#" + reqId, 4) +
+            " ->" + targets + " (" + leadFrames + "f) " + text);
 
         return reqId;
     }
@@ -1033,14 +1203,14 @@ class SimRun {
         }
     }
 
-    // Before frame 1: describe the opening scene with no lead, hold the world
-    // still until the pilot answers, act on it. Nothing moves in here, so a cold
-    // first call costs wall clock but no altitude.
+    // Before frame 1: describe the opening scene with no lead and a single
+    // horizon, hold the world still until the pilot answers, act on it. Nothing
+    // moves in here, so a cold first call costs wall clock but no altitude.
     async doWarmStart() {
         this.nextPipe = this.selectNextPipe();
 
         const startedAt = Date.now();
-        const reqId = this.sendNow(0);
+        const reqId = this.sendNow(0, true);
         if (!reqId) return;
 
         this.lastSendMs = Date.now();
@@ -1086,18 +1256,22 @@ class SimRun {
             seed: this.seed,
             frames: this.frame,
             wallSeconds: (Date.now() - startedAt) / 1000,
+            gameSeconds: (this.frame * this.dt) / 60,
             score: this.bird.score,
             cause: this.death != null ? this.death.cause : "survived",
             sent: this.client.stats.requests,
             answered: this.client.stats.answers,
             errors: this.client.stats.errors,
+            candidatesHeld: this.candidatesHeld,
             applied: this.applied,
             appliedFlap: this.appliedFlap,
             appliedWait: this.appliedWait,
+            appliedByHorizon: this.appliedByHorizon,
             superseded: this.superseded,
             stale: this.stale,
             discarded: this.discarded,
             flaps: this.flaps,
+            climb: longestClimb(this.birdYs),
             errorLog: this.client.errorLog,
             latenciesMs: this.latenciesMs,
             latenciesFrames: this.latenciesFrames,
@@ -1106,6 +1280,8 @@ class SimRun {
             lateByValues: this.lateByValues,
             timeScale: this.timeScale,
             leadMode: this.leadMode,
+            horizonGap: this.horizonGap,
+            horizonKeys: this.horizonKeys,
             warmStartMs: this.warmStartMs
         };
     }
@@ -1121,10 +1297,14 @@ function printSummary(label, rows) {
     const lateBy = [];
 
     const totals = {
-        frames: 0, score: 0, wall: 0,
-        sent: 0, answered: 0, applied: 0, appliedFlap: 0, appliedWait: 0,
+        frames: 0, score: 0, wall: 0, game: 0,
+        sent: 0, answered: 0, candidatesHeld: 0,
+        applied: 0, appliedFlap: 0, appliedWait: 0,
         superseded: 0, stale: 0, discarded: 0, errors: 0, flaps: 0
     };
+
+    const byHorizon = {};
+    let bestClimb = { rise: 0, frames: 0, fromFrame: 0, toFrame: 0 };
 
     for (const r of rows) {
         for (const v of r.latenciesMs) latMs.push(v);
@@ -1136,8 +1316,10 @@ function printSummary(label, rows) {
         totals.frames += r.frames;
         totals.score += r.score;
         totals.wall += r.wallSeconds;
+        totals.game += r.gameSeconds;
         totals.sent += r.sent;
         totals.answered += r.answered;
+        totals.candidatesHeld += r.candidatesHeld;
         totals.applied += r.applied;
         totals.appliedFlap += r.appliedFlap;
         totals.appliedWait += r.appliedWait;
@@ -1146,14 +1328,22 @@ function printSummary(label, rows) {
         totals.discarded += r.discarded;
         totals.errors += r.errors;
         totals.flaps += r.flaps;
+
+        for (const key of Object.keys(r.appliedByHorizon)) {
+            byHorizon[key] = (byHorizon[key] || 0) + r.appliedByHorizon[key];
+        }
+        if (r.climb.rise > bestClimb.rise) bestClimb = r.climb;
     }
 
     const sortedMs = latMs.slice().sort(function (a, b) { return a - b; });
     const timeScale = rows[0].timeScale;
+    const horizonGap = rows[0].horizonGap;
 
     const warmStarts = rows
         .map(function (r) { return r.warmStartMs; })
         .filter(function (v) { return v != null; });
+
+    const flapsPerGameMinute = totals.game > 0 ? totals.flaps * 60 / totals.game : 0;
 
     console.log("\n=== " + label + " ===");
     console.log("  lead            : " + rows[0].leadMode +
@@ -1161,10 +1351,15 @@ function printSummary(label, rows) {
         (warmStarts.length > 0
             ? " (warm start " + warmStarts.map(function (v) { return v + " ms"; }).join(", ") + ")"
             : ""));
+    console.log("  horizons        : " + (horizonGap > 0
+        ? rows[0].horizonKeys.join(" + ") + ", gap " + horizonGap + " frames"
+        : "single `decision` question (--horizon-gap 0)") +
+        " | freshness by premise");
     console.log("  time scale      : " + timeScale + "x" +
         (timeScale === 1 ? " (game time = wall time)" : " (the world runs " + timeScale + "x slower than wall time)"));
     console.log("  frames survived : " + totals.frames + "  (" + (totals.frames / 60).toFixed(2) +
-        " s of draw time, " + totals.wall.toFixed(2) + " s of wall clock)");
+        " s of draw time, " + totals.game.toFixed(2) + " s of game time, " +
+        totals.wall.toFixed(2) + " s of wall clock)");
     console.log("  score           : " + totals.score);
     if (rows.length === 1) {
         console.log("  cause of death  : " + rows[0].cause);
@@ -1174,13 +1369,24 @@ function printSummary(label, rows) {
         }).join("; "));
     }
     console.log("  requests        : " + totals.sent + " sent, " + totals.answered + " answered, " +
-        totals.applied + " applied, " + totals.superseded + " superseded, " +
-        totals.stale + " stale, " + totals.discarded + " discarded" +
+        totals.discarded + " discarded" +
         (totals.errors > 0 ? ", " + totals.errors + " errored" : ""));
+    console.log("  candidates      : " + totals.candidatesHeld + " held, " + totals.applied +
+        " applied, " + totals.superseded + " superseded (premise), " + totals.stale + " stale");
+    console.log("  applied/horizon : " + rows[0].horizonKeys.map(function (key) {
+        return key + " " + (byHorizon[key] || 0);
+    }).join(", "));
     console.log("  decisions       : " + totals.appliedFlap + " FLAP, " + totals.appliedWait +
-        " WAIT | " + totals.flaps + " flaps");
+        " WAIT | " + totals.flaps + " flaps, " + flapsPerGameMinute.toFixed(1) +
+        " per minute of game time");
+    console.log("  longest climb   : " + Math.round(bestClimb.rise) + " px over " +
+        bestClimb.frames + " frames" +
+        (bestClimb.rise > 0
+            ? " (" + frameTag(bestClimb.fromFrame) + "->" + frameTag(bestClimb.toFrame) + ")"
+            : ""));
     console.log("  latency         : mean " + Math.round(mean(latMs)) + " ms, p95 " +
-        Math.round(percentile(sortedMs, 0.95)) + " ms");
+        Math.round(percentile(sortedMs, 0.95)) + " ms, mean " +
+        mean(latFrames).toFixed(1) + " frames");
     console.log("  model time      : " + (modelMs.length > 0
         ? "mean " + Math.round(mean(modelMs)) + " ms over " + modelMs.length + " answers"
         : "not reported"));
@@ -1229,7 +1435,7 @@ async function main() {
 
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 
-    console.log("flappy-jev simulator v2 | translator v" + JevTranslator.VERSION +
+    console.log("flappy-jev simulator v2.1 | translator v" + JevTranslator.VERSION +
         " | decision " + JevQuestions.FLAP + "/" + JevQuestions.WAIT);
     console.log("canvas " + opts.width + "x" + opts.height +
         " | tick every " + opts.tickMs + " ms" +
@@ -1237,6 +1443,10 @@ async function main() {
         " | late window " + opts.lateFrames + " frames" +
         " | time scale " + opts.timeScale + "x" +
         " | budget " + opts.maxFrames + " frames (" + (opts.maxFrames / 60).toFixed(1) + " s)");
+    console.log("horizons " + (opts.horizonGap > 0
+        ? JevQuestions.HORIZONS.join(" + ") + ", gap " + opts.horizonGap + " frames"
+        : "single `decision` question (--horizon-gap 0)") +
+        " | freshness by premise");
     console.log("lead " + (opts.leadMode === "none"
         ? "off (--no-lead)"
         : (opts.leadMode === "fixed"
@@ -1278,4 +1488,11 @@ if (require.main === module) {
 }
 
 // exported so the physics port can be exercised on its own
-module.exports = { Bird: Bird, Pipe: Pipe, circleRect: circleRect, makeRandom: makeRandom, SimRun: SimRun };
+module.exports = {
+    Bird: Bird,
+    Pipe: Pipe,
+    circleRect: circleRect,
+    makeRandom: makeRandom,
+    longestClimb: longestClimb,
+    SimRun: SimRun
+};
