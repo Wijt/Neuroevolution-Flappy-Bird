@@ -29,7 +29,7 @@ const JEV_DASH_MIN_H = 240;
 const JEV_PANEL_TAP_MS = 300;
 
 //the chart keeps this many applied answers
-const JEV_PANEL_CHART_MAX = 240;
+const JEV_PANEL_CHART_MAX = 120;
 
 //the tick strip under the stats shows this many seconds of decisions
 const JEV_DASH_TICK_SECONDS = 5;
@@ -394,8 +394,9 @@ var JevPanel = (function () {
 
         if (n < 2) return;
 
+        //fills from the left; once the chart is full the oldest point falls off
         let stepX = (fit.w - pad * 2) / (JEV_PANEL_CHART_MAX - 1);
-        let x0 = fit.w - pad - stepX * (n - 1);
+        let x0 = pad;
         let yOf = c => pad + (1 - c) * (fit.h - pad * 2);
 
         ctx.strokeStyle = ink("--teal", "#3ddc97");

@@ -72,10 +72,11 @@ body {
    No gradients, no shadows, no rounded cards, no animation. */
 
 .jev-dash {
-    --page: #0b0f14;
-    --line: #1f2a33;
+    /* the game's colours: its background, its pipe blue for lines */
+    --page: #1b1b2f;
+    --line: #2a3556;
     --text: #e6edf3;
-    --muted: #6b7d8a;
+    --muted: #7d88a8;
     --teal: #3ddc97;
     --amber: #f5b342;
     --blue: #4aa3ff;
@@ -131,6 +132,16 @@ body {
     border-bottom: 1px solid var(--line);
 }
 
+/* header, columns and footer share one centred measure */
+.jd-head,
+.jd-main,
+.jd-foot {
+    width: 100%;
+    max-width: 1120px;
+    margin-left: auto;
+    margin-right: auto;
+}
+
 .jd-brand { flex: 1 1 auto; }
 
 .jd-back-slot {
@@ -138,21 +149,10 @@ body {
     align-items: center;
 }
 
-/* the way out keeps the dashboard's looks, not the game menu's */
+/* the way out is the same white button every other scene has */
 .jd-back.return-to-menu-button {
-    width: 26px !important;
-    height: 26px !important;
-    background: transparent !important;
-    border: 1px solid var(--line) !important;
-    border-radius: 2px !important;
-    box-shadow: none !important;
-    text-shadow: none !important;
-    color: var(--muted) !important;
-    font-family: inherit !important;
-    font-size: 13px !important;
-    line-height: 24px !important;
-    transition: none !important;
-    translate: none !important;
+    width: 30px !important;
+    height: 30px !important;
 }
 
 .jd-foot {
@@ -173,7 +173,8 @@ body {
     flex: 1 1 auto;
     min-height: 0;
     display: flex;
-    gap: 48px;
+    justify-content: center;
+    gap: 56px;
     padding: 16px 0;
 }
 
@@ -391,8 +392,9 @@ body {
 
 /* the numbers that are true but not the point, at the foot of the column */
 .jd-telemetry {
-    margin-top: auto;
+    margin-top: 22px;
     padding-top: 14px;
+    border-top: 1px solid var(--line);
 }
 
 /* ---- narrow windows stack the columns; nothing is fixed any more ---- */
