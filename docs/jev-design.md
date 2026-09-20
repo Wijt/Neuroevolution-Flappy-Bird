@@ -355,46 +355,47 @@ General LLM agents on games:
 The conclusion is consistent across all of these. Real-time play works only with small fast
 models on structured text. Screenshot LLM agents pause the game.
 
-## 9. HUD and debug keys
+## 9. Panel, overlay and keys
 
-There is no side panel. Everything Jev sees and decides is drawn on the game canvas in p5
-(`data/jev/jev-hud.js`), mobile first: sizes scale with the canvas width, 11 px minimum at
-375 px, the return button corner stays clear.
+The layout follows the PlayJev demo page (github.com/OmniJev/PlayJev): the game canvas
+with an instrument panel to its right on wide screens, and a collapsible sheet at the bottom
+on phones. Code: `data/jev/jev-panel.js` (plain DOM plus one chart canvas) and
+`data/jev/jev-hud.js` (the overlay drawn in p5).
 
-What is drawn, top to bottom:
+Panel, top to bottom:
 
-- **Ticker** under the score: latency, lead in frames, requests per second, cost per hour
-  at $0.042 per million input tokens, speed.
-- **Timeline** of the last 300 draw frames (5 s): each request a bar from send to receive,
-  green applied, amber superseded, red stale, grey in flight; flap ticks under it; a death
-  line; the three counters at the right.
-- **What Jev sees**, drawn as an interpretation and not as game art: an outlined ghost bird
-  at the described predicted position with "+Nf" for the lead, a dashed thread from the real
-  bird, the described pipe's gap halves tinted cool above and warm below, the two clearances
-  in px, the distance ruler, the two words Jev matches on, and beside them the decision word
-  with its probability, FLAP warm, WAIT cool, as the largest HUD text.
-- **Decision flow** on the ground band: Snapshot, Question, Jev, Action with packets that
-  travel for the measured latency and land with the answer; the Action box shows the two
-  probability bars; an applied FLAP flashes the arrow to the game.
+- "Flappy Jev" and the score.
+- An explainer that says what actually happens: "text snapshot, the only input" and
+  "option list, flap · wait" feed "one forward pass, Jev 1.13", which returns "a probability
+  for every option". The flap and wait bars are live; the chosen one is filled.
+- pause / restart, and the model chip.
+- speed: 1/8x, 1/4x, 1/2x, 1x. Changes the world speed at once (`jevSetTimeScale`).
+- confidence of the last applied answer.
+- "confidence through the flight": a line over time with a tick strip under it, red for
+  flaps, faint for answers that were dropped.
+- Footer in plain words: decisions a second, answer time, tokens a minute, cost an hour,
+  and how far ahead the bird is described. No frame counts anywhere in the UI.
 
-Style rules, borrowed from agent-view overlays elsewhere (AlphaStar's agent view, MarI/O's
-input box, Tesla's "mind of car", F1 telemetry): thin outlines and low-alpha tints so the
-layer reads as the model's view of the world, the decision drawn where the situation is,
-four HUD colours only (BIRD_COLOR, #4f8a8b, #ffb020, #3ddc84) plus white at low alpha, no
-gradients or glows, motion only where it is real.
+Overlay on the canvas, on by default, V toggles it: an outlined ghost at the described
+position with "in 0.38 s", a dashed thread from the real bird, the described pipe's gap
+halves tinted, the two clearances in px to the left of their line, the ruler, and a stacked
+block to the right of the ghost with the decision word and probability, the two words, and
+the lead in seconds. Nothing is drawn over the bird.
+
+Visual rules: tokens as CSS custom properties from the game palette (bird red for flap, the
+alternate palette's teal for wait and amber for dropped), one typeface (IBM Plex Mono),
+sentence case, no gradients, shadows or animation. Three earlier attempts (a DOM dashboard
+with a flow diagram, an all-on-canvas HUD with tickers) were rejected because their labels
+encoded nothing; this one shows the question, the inputs and the answer.
 
 | Input | Effect |
 | --- | --- |
-| tap or click while flying | cycle HUD level: full, minimal (ghost and decision only), off |
 | tap or click while dead | fly again |
-| H | cycle HUD level |
-| P | pause and resume |
-| N | one frame while paused |
-| M | run to the next event while paused |
+| speed buttons | world speed |
+| pause / restart | as named |
+| P, N, M | pause, one frame, next event |
+| V | overlay on or off |
 | D | download the trace as JSONL |
-
-Trace records: header, send, recv (with outcome), apply (with lateBy), superseded (with the
-asked and current words), stale, flap, death. Same format as the simulator writes.
 
 ## 10. History (v1)
 
