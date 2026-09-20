@@ -38,10 +38,10 @@ const JEV_DASH_TICK_SECONDS = 5;
 const JEV_PANEL_COST_PER_M = 0.042;
 
 //the five things one request carries, in the order the snapshot lists them
-const JEV_DASH_SEEN = ["POSITION", "MOTION", "ROOM ABOVE", "ROOM BELOW", "NEXT PIPE"];
+const JEV_DASH_SEEN = ["position", "motion", "room above", "room below", "next pipe"];
 
 //the telemetry block, in order
-const JEV_DASH_TELEMETRY = ["INFERENCE", "NETWORK", "DECISIONS", "INPUT TOKENS", "COST", "ENGINE"];
+const JEV_DASH_TELEMETRY = ["answer time", "tokens this flight", "cost"];
 //#endregion
 
 var JevPanel = (function () {
@@ -115,18 +115,6 @@ var JevPanel = (function () {
         return { node: node, fill: fill, value: value };
     }
 
-    //a gauge row: a caps label, one hairline with a coloured length on it, the number
-    function gaugeRow(name, tone) {
-        let node = el("div", "jd-gauge");
-        node.appendChild(el("span", "jd-cap", name));
-        let track = el("span", "jd-line");
-        let fill = el("i", "jd-fill jd-" + tone);
-        track.appendChild(fill);
-        node.appendChild(track);
-        let value = el("span", "jd-val", "–");
-        node.appendChild(value);
-        return { node: node, fill: fill, value: value };
-    }
 
     function section(name, note) {
         let node = el("div", "jd-section");
@@ -142,8 +130,8 @@ var JevPanel = (function () {
         let head = el("div", "jd-head");
         els.back = el("div", "jd-back-slot");
         head.appendChild(els.back);
-        head.appendChild(el("div", "jd-cap jd-brand", "FLAPPY JEV / TYPESAFE JEV"));
-        els.live = el("div", "jd-cap jd-teal", "LIVE RUN");
+        head.appendChild(el("div", "jd-cap jd-brand", "Flappy Jev"));
+        els.live = el("div", "jd-cap jd-teal", "live");
         head.appendChild(els.live);
         root.appendChild(head);
         //#endregion
@@ -156,9 +144,7 @@ var JevPanel = (function () {
         els.left = left;
 
         let title = el("div", "jd-title");
-        els.gameName = el("div", "jd-game-name", "F L A P P Y   J E V");
-        title.appendChild(els.gameName);
-        els.flight = el("div", "jd-cap jd-muted", "FLIGHT 01");
+        els.flight = el("div", "jd-cap jd-muted", "flight 01");
         title.appendChild(els.flight);
         left.appendChild(title);
 
@@ -166,9 +152,9 @@ var JevPanel = (function () {
         left.appendChild(els.box);
 
         let stats = el("div", "jd-stats");
-        els.score = stat("SCORE", "teal");
-        els.best = stat("BEST", "white");
-        els.decisions = stat("DECISIONS", "grey");
+        els.score = stat("score", "teal");
+        els.best = stat("best", "white");
+        els.decisions = stat("decisions", "grey");
         stats.appendChild(els.score.node);
         stats.appendChild(els.best.node);
         stats.appendChild(els.decisions.node);
@@ -187,40 +173,34 @@ var JevPanel = (function () {
         //#region the right column: the pilot
         let right = el("div", "jd-right");
 
-        right.appendChild(el("div", "jd-pilot jd-teal", "Jev 1.13"));
-        right.appendChild(el("div", "jd-cap jd-muted", "TypeSafe · System One · text snapshot in, one choice out"));
+        let pilot = el("div", "jd-pilot");
+        pilot.appendChild(el("span", "jd-teal", "Jev 1.13"));
+        pilot.appendChild(el("span", "jd-cap jd-muted jd-by", "by TypeSafe"));
+        right.appendChild(pilot);
 
-        right.appendChild(section("NEXT MOVE", "MODEL PROBABILITIES"));
-        els.flap = probRow("FLAP");
-        els.wait = probRow("WAIT");
+        right.appendChild(section("next move", null));
+        els.flap = probRow("flap");
+        els.wait = probRow("wait");
         right.appendChild(els.flap.node);
         right.appendChild(els.wait.node);
 
         let executing = el("div", "jd-exec");
-        executing.appendChild(el("span", "jd-cap", "EXECUTING"));
-        els.executing = el("span", "jd-cap jd-teal jd-exec-value", "WAITING FOR PILOT");
+        executing.appendChild(el("span", "jd-cap", "executing"));
+        els.executing = el("span", "jd-cap jd-teal jd-exec-value", "waiting for the pilot");
         executing.appendChild(els.executing);
         right.appendChild(executing);
 
-        right.appendChild(section("WHAT JEV SEES", null));
+        els.aheadValue = el("span", "jd-cap jd-note", "–");
+        let seenHead = section("what Jev sees", null);
+        seenHead.appendChild(els.aheadValue);
+        right.appendChild(seenHead);
         els.seen = [];
         for (let i = 0; i < JEV_DASH_SEEN.length; i++) {
             let made = row("jd-row", JEV_DASH_SEEN[i]);
             right.appendChild(made.node);
             els.seen.push(made);
         }
-        els.ahead = el("div", "jd-row jd-muted-row");
-        els.ahead.appendChild(el("span", "jd-cap", "DESCRIBED"));
-        els.aheadValue = el("span", "jd-cap", "–");
-        els.ahead.appendChild(els.aheadValue);
-        right.appendChild(els.ahead);
-
-        els.confidence = gaugeRow("CONFIDENCE", "teal");
-        els.answerTime = gaugeRow("ANSWER TIME", "blue");
-        right.appendChild(els.confidence.node);
-        right.appendChild(els.answerTime.node);
-
-        right.appendChild(section("CONFIDENCE THROUGH THE FLIGHT", null));
+        right.appendChild(section("how sure it was, this flight", null));
         els.chart = el("canvas", "jd-chart");
         right.appendChild(els.chart);
 
@@ -238,9 +218,8 @@ var JevPanel = (function () {
 
         //#region the footer
         let foot = el("div", "jd-foot");
-        foot.appendChild(el("div", "jd-cap jd-muted", "SPACE pause  V overlay  R reset  D trace"));
+        foot.appendChild(el("div", "jd-cap jd-muted", "space pause · v overlay · r reset · d trace"));
         let end = el("div", "jd-foot-end");
-        end.appendChild(el("span", "jd-cap jd-muted", "DECISIONS BY JEV"));
         els.clock = el("span", "jd-cap jd-teal", "00:00");
         end.appendChild(els.clock);
         foot.appendChild(end);
@@ -290,9 +269,6 @@ var JevPanel = (function () {
 
         els.box.style.width = size.w + "px";
         els.box.style.height = size.h + "px";
-
-        //the letter-spaced title has to live inside the column, however narrow it is
-        els.gameName.style.fontSize = Math.max(10, Math.min(14, Math.floor(size.w / 19))) + "px";
 
         let node = canvasElement();
         if (node != null && (width !== size.w || height !== size.h)) {
@@ -515,10 +491,6 @@ var JevPanel = (function () {
         setClass(parts.node, "jd-chosen", applied != null && applied.choice === option);
     }
 
-    function writeGauge(parts, value, max, text) {
-        parts.fill.style.width = (typeof value === "number" ? clamp01(value / max) * 100 : 0) + "%";
-        setText(parts.value, text);
-    }
 
     //decisions a second, off the tick strip, so it is a rate and not an average
     function decisionRate() {
@@ -533,7 +505,7 @@ var JevPanel = (function () {
         let stats = scene.client != null ? scene.client.stats : null;
         let seconds = Math.max(0.001, (now() - flightStartMs) / 1000);
 
-        setText(els.flight, "FLIGHT " + pad3(scene.runId).slice(1));
+        setText(els.flight, "flight " + pad3(scene.runId).slice(1));
 
         //the three big numbers of this flight
         let score = scene.bird != null ? scene.bird.score : 0;
@@ -546,18 +518,15 @@ var JevPanel = (function () {
 
         setText(els.rate, decisionRate().toFixed(1) + " /s");
 
-        setText(els.tel.INFERENCE.value, stats != null && stats.lastUpstreamMs != null ? Math.round(stats.lastUpstreamMs) + " ms" : "–");
-        setText(els.tel.NETWORK.value, stats != null && stats.lastLatencyMs ? Math.round(stats.lastLatencyMs) + " ms" : "–");
-        setText(els.tel.DECISIONS.value, decisionRate().toFixed(1) + " /s");
+        setText(els.tel["answer time"].value, stats != null && stats.lastLatencyMs ? (stats.lastLatencyMs / 1000).toFixed(2) + " s" : "–");
 
         let tokens = stats != null ? Math.max(0, stats.inputTokens - baseTokens) : 0;
-        setText(els.tel["INPUT TOKENS"].value, tokens.toLocaleString());
+        setText(els.tel["tokens this flight"].value, tokens.toLocaleString());
 
         let perHour = tokens / seconds * 3600 * JEV_PANEL_COST_PER_M / 1e6;
-        setText(els.tel.COST.value, "$" + perHour.toFixed(2) + " /h");
-        setText(els.tel.ENGINE.value, "jev-latest · api.typesafe.ai");
+        setText(els.tel.cost.value, "$" + perHour.toFixed(2) + " an hour");
 
-        setText(els.live, "LIVE RUN · " + (JEV_TIME_SCALE === 1 ? "1×" : "1/" + JEV_TIME_SCALE + "×"));
+        setText(els.live, "live · " + (JEV_TIME_SCALE === 1 ? "full speed" : "1/" + JEV_TIME_SCALE + " speed"));
 
         let elapsed = Math.floor(seconds);
         setText(els.clock, pad3(Math.floor(elapsed / 60)).slice(1) + ":" + pad3(elapsed % 60).slice(1));
@@ -580,13 +549,6 @@ var JevPanel = (function () {
         let waiting = scene.waitingForPilot || applied == null || applied.choice == null;
         setText(els.executing, waiting ? "WAITING FOR PILOT" : applied.choice);
         setClass(els.executing, "jd-flap", !waiting && applied.choice === JevQuestions.FLAP);
-
-        let confidence = applied != null ? probabilityOf(applied, applied.choice) : null;
-        writeGauge(els.confidence, confidence, 1, typeof confidence === "number" ? confidence.toFixed(2) : "–");
-
-        let stats = scene.client != null ? scene.client.stats : null;
-        let answerMs = stats != null ? stats.lastLatencyMs : 0;
-        writeGauge(els.answerTime, answerMs ? answerMs / 1000 : null, 1, answerMs ? (answerMs / 1000).toFixed(2) + " s" : "–");
 
         gather(scene);
         drawChart();

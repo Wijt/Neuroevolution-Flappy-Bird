@@ -107,8 +107,7 @@ body {
 .jd-cap {
     color: var(--muted);
     font-size: 11px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    letter-spacing: 0.04em;
     white-space: nowrap;
 }
 
@@ -188,7 +187,9 @@ body {
 }
 
 .jd-right {
-    flex: 1 1 auto;
+    /* a reading column, not a strip across the screen */
+    flex: 0 1 560px;
+    max-width: 560px;
     min-width: 0;
     display: flex;
     flex-direction: column;
@@ -256,6 +257,9 @@ body {
 
 /* ---- right: the pilot ---- */
 .jd-pilot {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
     font-size: 15px;
 }
 
@@ -298,7 +302,6 @@ body {
     width: 52px;
     color: var(--muted);
     font-size: 11px;
-    letter-spacing: 0.08em;
 }
 
 .jd-track {
@@ -383,7 +386,7 @@ body {
     display: block;
     width: 100%;
     min-width: 0;
-    height: 100px;
+    height: 72px;
 }
 
 /* the numbers that are true but not the point, at the foot of the column */
