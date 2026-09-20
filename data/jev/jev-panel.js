@@ -540,14 +540,14 @@ var JevPanel = (function () {
 
         let frameMs = scene.frameMs || JEV_FRAME_MS;
         let lead = scene.lastSent != null ? scene.lastSent.leadFrames * frameMs / 1000 : null;
-        setText(els.aheadValue, lead != null ? lead.toFixed(2) + " S AHEAD" : "–");
+        setText(els.aheadValue, lead != null ? lead.toFixed(2) + " s ahead" : "–");
 
         let applied = scene.lastApplied;
         writeProb(els.flap, applied, JevQuestions.FLAP);
         writeProb(els.wait, applied, JevQuestions.WAIT);
 
         let waiting = scene.waitingForPilot || applied == null || applied.choice == null;
-        setText(els.executing, waiting ? "WAITING FOR PILOT" : applied.choice);
+        setText(els.executing, waiting ? "WAITING FOR PILOT" : applied.choice.toLowerCase());
         setClass(els.executing, "jd-flap", !waiting && applied.choice === JevQuestions.FLAP);
 
         gather(scene);
