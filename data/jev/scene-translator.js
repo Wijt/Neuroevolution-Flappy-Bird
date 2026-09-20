@@ -7,7 +7,7 @@
 // when the answer lands, assuming the bird is left alone. Code predicts where the
 // world will be; Jev decides what to do there.
 var JevTranslator = (function () {
-    var VERSION = "2.1.1";
+    var VERSION = "2.2.0";
 
     // physics, copied from constants.js / bird.js / pipe.js so Node can run it too
     var GRAVITY = 0.4;
@@ -83,21 +83,13 @@ var JevTranslator = (function () {
             distance: distance
         };
 
+        // the words carry the decision, the three numbers give scale; nothing else is sent
         var state = {
-            bird: {
-                y: y,
-                velocity_y: Math.round(p.birdVelocity * 10) / 10,
-                position: fields.position,
-                motion: fields.motion,
-                clearance_above_bird_to_gap_top: above,
-                clearance_below_bird_to_gap_bottom: below
-            },
-            next_pipe: {
-                distance_x: distance,
-                gap_top_y: gapTop,
-                gap_bottom_y: gapBottom
-            },
-            y_axis: "y grows downward; smaller y is higher"
+            bird_position: fields.position,
+            bird_motion: fields.motion,
+            room_above_bird_px: above,
+            room_below_bird_px: below,
+            next_pipe_distance_px: distance
         };
 
         return { state: state, fields: fields, predicted: p };

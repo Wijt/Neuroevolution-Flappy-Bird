@@ -24,7 +24,7 @@ const JEV_DT = 1 / JEV_TIME_SCALE;
 
 //#region loop constants
 //the cadence is wall clock: one request every this many ms, however fast the frames go
-const JEV_TICK_MS = 100;
+const JEV_TICK_MS = 250; // one question every 250 ms; 100 to 300 all survive in the simulator, 250 keeps a margin for latency spikes
 
 //how many requests may be in the air at once
 const JEV_MAX_IN_FLIGHT = 8;

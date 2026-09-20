@@ -96,7 +96,7 @@ function parseArgs(argv) {
         seed: 1,
         runs: 1,
         maxFrames: 3600,
-        tickMs: 100,
+        tickMs: 250,
         maxInFlight: 8,
         lateFrames: 6,
         leadMs: null,
@@ -1166,6 +1166,7 @@ class SimRun {
             score: this.bird.score,
             cause: this.death != null ? this.death.cause : "survived",
             sent: this.client.stats.requests,
+            inputTokens: this.client.stats.inputTokens,
             answered: this.client.stats.answers,
             errors: this.client.stats.errors,
             candidatesHeld: this.candidatesHeld,
@@ -1203,7 +1204,7 @@ function printSummary(label, rows) {
         frames: 0, score: 0, wall: 0, game: 0,
         sent: 0, answered: 0, candidatesHeld: 0,
         applied: 0, appliedFlap: 0, appliedWait: 0,
-        superseded: 0, stale: 0, discarded: 0, errors: 0, flaps: 0
+        superseded: 0, stale: 0, discarded: 0, errors: 0, flaps: 0, inputTokens: 0
     };
 
     let bestClimb = { rise: 0, frames: 0, fromFrame: 0, toFrame: 0 };
@@ -1220,6 +1221,7 @@ function printSummary(label, rows) {
         totals.wall += r.wallSeconds;
         totals.game += r.gameSeconds;
         totals.sent += r.sent;
+        totals.inputTokens += r.inputTokens || 0;
         totals.answered += r.answered;
         totals.candidatesHeld += r.candidatesHeld;
         totals.applied += r.applied;
@@ -1266,6 +1268,9 @@ function printSummary(label, rows) {
     console.log("  requests        : " + totals.sent + " sent, " + totals.answered + " answered, " +
         totals.discarded + " discarded" +
         (totals.errors > 0 ? ", " + totals.errors + " errored" : ""));
+    console.log("  tokens          : " + totals.inputTokens + " in (" +
+        (totals.sent > 0 ? Math.round(totals.inputTokens / totals.sent) : 0) + " per request, " +
+        Math.round(totals.inputTokens / Math.max(1, totals.frames / 60 / 60)) + " per minute of wall clock)");
     console.log("  candidates      : " + totals.candidatesHeld + " held, " + totals.applied +
         " applied, " + totals.superseded + " superseded (premise), " + totals.stale + " stale");
     console.log("  decisions       : " + totals.appliedFlap + " FLAP, " + totals.appliedWait +

@@ -3,7 +3,7 @@
 This document is normative. Code must match it. If the two disagree, fix one of them and bump
 the version.
 
-Current contract version: `JevTranslator.VERSION = "2.0.0"`.
+Current contract version: `JevTranslator.VERSION = "2.2.0"`.
 
 ## 1. What this is
 
@@ -41,20 +41,11 @@ the answer arrives, with the bird left alone. See section 3.
 
 ```json
 {
-  "bird": {
-    "y": 505,
-    "velocity_y": 5.4,
-    "position": "below the gap",
-    "motion": "falling fast",
-    "clearance_above_bird_to_gap_top": 102,
-    "clearance_below_bird_to_gap_bottom": -7
-  },
-  "next_pipe": {
-    "distance_x": 123,
-    "gap_top_y": 388,
-    "gap_bottom_y": 513
-  },
-  "y_axis": "y grows downward; smaller y is higher"
+  "bird_position": "below the gap",
+  "bird_motion": "falling fast",
+  "room_above_bird_px": 102,
+  "room_below_bird_px": -7,
+  "next_pipe_distance_px": 123
 }
 ```
 
@@ -62,16 +53,15 @@ Every field, and what it means:
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `bird.y` | number | predicted bird centre, screen pixels |
-| `bird.velocity_y` | number | predicted vertical speed, px per game frame, negative is up |
-| `bird.position` | phrase | where the bird sits relative to the gap |
-| `bird.motion` | phrase | what the bird is doing vertically |
-| `bird.clearance_above_bird_to_gap_top` | number | px from the bird's top edge down to the gap top, negative means the bird is higher than the gap |
-| `bird.clearance_below_bird_to_gap_bottom` | number | px from the bird's bottom edge up to the gap bottom, negative means the bird is lower than the gap |
-| `next_pipe.distance_x` | number | px from the bird's front edge to the pipe's leading edge, clamped at 0 |
-| `next_pipe.gap_top_y` | number | screen y of the gap's top edge |
-| `next_pipe.gap_bottom_y` | number | screen y of the gap's bottom edge |
-| `y_axis` | fixed string | tells the model which way is up |
+| `bird_position` | phrase | where the bird sits relative to the gap |
+| `bird_motion` | phrase | what the bird is doing vertically |
+| `room_above_bird_px` | number | px from the bird's top edge down to the gap top, negative means the bird is higher than the gap |
+| `room_below_bird_px` | number | px from the bird's bottom edge up to the gap bottom, negative means the bird is lower than the gap |
+| `next_pipe_distance_px` | number | px from the bird's front edge to the pipe's leading edge, clamped at 0 |
+
+This is the v2.2 shape. v2.0 also sent the bird's y and velocity, the gap's two screen
+coordinates and an axis note; they duplicated the two clearances, cost tokens, and dropping
+them raised the calibration margin (section 10c).
 
 The pipe chosen is the first one whose trailing edge is still ahead of the bird's back edge,
 after the predicted scroll. Same criterion the scenes use for scoring.
@@ -479,9 +469,31 @@ The second horizon lands answers half a frame closer to their moment and the out
 not care. The mechanism was removed from the code rather than kept as a knob; commit
 3312c4d holds the two-horizon version if it is ever wanted again.
 
-**Cost as shipped.** About 490 input tokens per request, 8 to 10 requests per second while
-flying, so roughly 1M tokens per 20 pipes at 1/4 speed, which is about 4 cents at $0.042
-per million input tokens. `JEV_TICK_MS` and the snapshot fields are the remaining knobs.
+## 10c. v2.2: token cost
+
+Measured on the same three seeds at 1/4 speed, 90 s budget, real Jev. Baseline was the v2.1
+snapshot at a 100 ms tick: 489 input tokens per request, 268k tokens per minute of flight,
+about 1M tokens per 20 pipes.
+
+| change | tokens / request | tokens / minute | result |
+| --- | --- | --- | --- |
+| compact snapshot (words + three numbers, no coordinates, no axis note) | 420 | 230k | 24/24 calibration, margin 0.46 (up from 0.34) |
+| compact + tick 150 ms | 420 | 161k | 9, 9, 9 |
+| compact + tick 200 ms | 420 | 124k | 9, 9, 9 |
+| compact + tick 250 ms | 420 | 97k | 9, 9, 9 |
+| compact + tick 300 ms | 420 | 81k | 9, 9, 9 |
+| compact + tick 150 + skip re-asking while the words are unchanged (400 ms) | 418 | 89k | 3, 9, 1 and 2, 9, 9: rejected |
+
+Two lessons. The question and its criteria are about 350 of the 420 tokens, so shrinking
+the snapshot saves little; the request rate is the lever. And "do not re-ask an unchanged
+situation" kills: when the words stay "below the gap, rising" the pilot must keep flapping,
+and skipping the question means no new answer to apply. Jev has to be asked at the cadence
+the flaps need.
+
+Shipped: compact snapshot (the only shape now, translator 2.2.0) and `JEV_TICK_MS = 250`,
+about 4 requests per second, roughly 97k tokens per minute of flight, about 390k tokens
+(1.6 cents) per 20 pipes. 300 ms also passed and is the next knob if cost matters more
+than margin against latency spikes.
 
 ## 11. Versioning
 
