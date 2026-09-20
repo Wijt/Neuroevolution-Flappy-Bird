@@ -135,27 +135,32 @@ var JevHud = (function () {
                 dashed(false);
 
                 noStroke();
+                //a label sits halfway along its line; when the bird is outside the gap the
+                //line is inside the ghost, so the label moves just past the gap edge instead
                 fill(aboveColor);
-                text(fields.above + " px", leftEdge, (ghostY - r + gap.top) / 2);
+                text(fields.above + " px", leftEdge, fields.above >= 0 ? (ghostY - r + gap.top) / 2 : gap.top - 8);
                 fill(belowColor);
-                text(fields.below + " px", leftEdge, (ghostY + r + gap.bottom) / 2);
+                text(fields.below + " px", leftEdge, fields.below >= 0 ? (ghostY + r + gap.bottom) / 2 : gap.bottom + 8);
             pop();
 
-            push(); //the ruler: nose of the ghost to the front of the pipe
-                stroke(COLORS.line);
-                strokeWeight(1);
-                line(BIRD_X + r, ghostY, gap.x1, ghostY);
-                line(BIRD_X + r, ghostY - 4, BIRD_X + r, ghostY + 4);
-                line(gap.x1, ghostY - 4, gap.x1, ghostY + 4);
+            //the ruler only when there is a distance left to show; at the pipe it has no length
+            if (fields.distance > 20) {
+                push(); //the ruler: nose of the ghost to the front of the pipe
+                    stroke(COLORS.line);
+                    strokeWeight(1);
+                    line(BIRD_X + r, ghostY, gap.x1, ghostY);
+                    line(BIRD_X + r, ghostY - 4, BIRD_X + r, ghostY + 4);
+                    line(gap.x1, ghostY - 4, gap.x1, ghostY + 4);
 
-                noStroke();
-                fill(COLORS.line);
-                textFont(JEV_HUD_MONO);
-                textSize(small);
-                //above its own line, so the decision block underneath stays clear
-                textAlign(RIGHT, BOTTOM);
-                text(fields.distance + " px", gap.x1 - 4, ghostY - 4);
-            pop();
+                    noStroke();
+                    fill(COLORS.line);
+                    textFont(JEV_HUD_MONO);
+                    textSize(small);
+                    //above its own line, so the decision block underneath stays clear
+                    textAlign(RIGHT, BOTTOM);
+                    text(fields.distance + " px", gap.x1 - 4, ghostY - 4);
+                pop();
+            }
         }
 
         //the panel says the same thing bigger; when it is open the canvas keeps just the ghost

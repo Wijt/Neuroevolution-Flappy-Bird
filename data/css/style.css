@@ -384,6 +384,8 @@ body {
 }
 
 .jd-chart {
+    /* a fixed-height strip; in the flex column it must not stretch to fill the gap */
+    flex: 0 0 72px;
     display: block;
     width: 100%;
     min-width: 0;

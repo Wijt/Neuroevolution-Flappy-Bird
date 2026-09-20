@@ -264,7 +264,8 @@ var JevPanel = (function () {
             let h = window.innerHeight - JEV_DASH_HEADER - JEV_DASH_STATS - JEV_DASH_CHROME;
             h = Math.max(JEV_DASH_MIN_H, Math.round(h));
             size = { w: Math.round(h * 9 / 16), h: h };
-            els.left.style.width = size.w + "px";
+            //the column clips, so it has to be as wide as the box including its two borders
+            els.left.style.width = (size.w + 2) + "px";
         }
 
         els.box.style.width = size.w + "px";
