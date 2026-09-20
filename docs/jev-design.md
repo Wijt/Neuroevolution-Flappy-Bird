@@ -355,44 +355,46 @@ General LLM agents on games:
 The conclusion is consistent across all of these. Real-time play works only with small fast
 models on structured text. Screenshot LLM agents pause the game.
 
-## 9. Debug mode
+## 9. HUD and debug keys
 
-The loop is asynchronous, so every interesting bug is about timing: which frame a request
-describes, which frame its answer lands on, how far the world moved in between. None of that is
-visible from the canvas.
+There is no side panel. Everything Jev sees and decides is drawn on the game canvas in p5
+(`data/jev/jev-hud.js`), mobile first: sizes scale with the canvas width, 11 px minimum at
+375 px, the return button corner stays clear.
 
-| Key | Effect |
+What is drawn, top to bottom:
+
+- **Ticker** under the score: latency, lead in frames, requests per second, cost per hour
+  at $0.042 per million input tokens, speed.
+- **Timeline** of the last 300 draw frames (5 s): each request a bar from send to receive,
+  green applied, amber superseded, red stale, grey in flight; flap ticks under it; a death
+  line; the three counters at the right.
+- **What Jev sees**, drawn as an interpretation and not as game art: an outlined ghost bird
+  at the described predicted position with "+Nf" for the lead, a dashed thread from the real
+  bird, the described pipe's gap halves tinted cool above and warm below, the two clearances
+  in px, the distance ruler, the two words Jev matches on, and beside them the decision word
+  with its probability, FLAP warm, WAIT cool, as the largest HUD text.
+- **Decision flow** on the ground band: Snapshot, Question, Jev, Action with packets that
+  travel for the measured latency and land with the answer; the Action box shows the two
+  probability bars; an applied FLAP flashes the arrow to the game.
+
+Style rules, borrowed from agent-view overlays elsewhere (AlphaStar's agent view, MarI/O's
+input box, Tesla's "mind of car", F1 telemetry): thin outlines and low-alpha tints so the
+layer reads as the model's view of the world, the decision drawn where the situation is,
+four HUD colours only (BIRD_COLOR, #4f8a8b, #ffb020, #3ddc84) plus white at low alpha, no
+gradients or glows, motion only where it is real.
+
+| Input | Effect |
 | --- | --- |
-| `P` | pause: no frame, no physics, no sends, no applying. Answers in flight land and wait. `draw()` and the panel keep running. |
-| `N` | one frame, while paused |
-| `M` | run until the next event (a send, an apply, a flap, a death), 600 frames at most, then pause |
+| tap or click while flying | cycle HUD level: full, minimal (ghost and decision only), off |
+| tap or click while dead | fly again |
+| H | cycle HUD level |
+| P | pause and resume |
+| N | one frame while paused |
+| M | run to the next event while paused |
+| D | download the trace as JSONL |
 
-Only `JevScene.keyPressed` reads these, so no other scene ever sees them.
-
-### Trace
-
-An event log capped at 2000 records, in the same JSONL shape `harness/simulate.js` writes. The
-panel shows the last records newest at the bottom, and the download trace button saves the whole
-log as `jev-trace-<runId>-<timestamp>.jsonl`. A restart appends a new header rather than
-clearing, so several flights sit in one file. A browser trace and a headless trace can then be
-read side by side, or diffed.
-
-| Record | Carries |
-| --- | --- |
-| `header` | version, seed, runId, tickMs, maxInFlight, lateFrames, timeScale, leadMode, translator version |
-| `send` | frame, reqId, targetFrame, leadFrames, leadMs, the predicted `fields`, and the unpredicted numbers under `actual` |
-| `recv` | frame, reqId, choice, latency in ms and frames, and the outcome (discarded, superseded, held) |
-| `apply` | frame, reqId, targetFrame, choice, `lateBy` in frames |
-| `stale` | frame, reqId, targetFrame, how late it was |
-| `flap` | frame |
-| `death` | frame, cause, score, bird y, gap edges, pipe x |
-
-### Lockstep is gone
-
-v1 had an `L` key that froze the world while a request was in flight. It existed to separate
-"the description is wrong" from "the answer is late". Prediction removed the need: the answer
-now describes the frame it arrives on, so a wrong flap is a description problem by definition.
-Removed in v2.
+Trace records: header, send, recv (with outcome), apply (with lateBy), superseded (with the
+asked and current words), stale, flap, death. Same format as the simulator writes.
 
 ## 10. History (v1)
 
