@@ -17,10 +17,19 @@
 //
 // Slow game time is still here: the jev world advances by a fraction of a frame per
 // draw, so the same 60 fps drawing costs Jev fewer game frames per round trip.
-const JEV_TIME_SCALE = 4; // the jev world runs this many times slower than the other scenes
+// The panel can change this mid flight, so it is a global and not a constant:
+// JevBird, JevPipe and the lead conversion all read it on the frame they run.
+var JEV_TIME_SCALE = 4; // the jev world runs this many times slower than the other scenes
 
 //one draw frame is worth this much game time
-const JEV_DT = 1 / JEV_TIME_SCALE;
+var JEV_DT = 1 / JEV_TIME_SCALE;
+
+//the only way the speed ever changes; dt follows on the very next frame
+function jevSetTimeScale(n) {
+    if (!(n > 0)) return;
+    JEV_TIME_SCALE = n;
+    JEV_DT = 1 / n;
+}
 
 //#region loop constants
 //the cadence is wall clock: one request every this many ms, however fast the frames go
@@ -51,8 +60,8 @@ const JEV_KEY_PAUSE = 80;
 const JEV_KEY_STEP = 78;
 const JEV_KEY_NEXT_EVENT = 77;
 
-//H cycles the HUD the same way a tap does, D writes the trace out
-const JEV_KEY_HUD = 72;
+//V shows or hides the canvas overlay, D writes the trace out
+const JEV_KEY_OVERLAY = 86;
 const JEV_KEY_TRACE = 68;
 
 //a request that never came back stops being a packet after this long
@@ -112,12 +121,9 @@ class JevScene extends Scene {
         this.abortedOnDeath = false;
 
         //#region debug mode
-        //the HUD level: 2 full, 1 minimal, 0 off. Sticky across restarts, it is a
-        //viewing preference and not part of the flight
-        this.hudLevel = 2;
-
-        //wall clock of the start of this flight, the HUD's tap hint hangs off it
-        this.startedAtMs = 0;
+        //the canvas overlay, on or off. Sticky across restarts, it is a viewing
+        //preference and not part of the flight
+        this.overlay = true;
 
         //the warm start: nothing moves until the pilot has answered once
         this.waitingForPilot = false;
@@ -150,6 +156,9 @@ class JevScene extends Scene {
                 this.returnToMenuButton = null;
             }
         });
+
+        //the telemetry lives in the DOM now, the canvas only draws what Jev was told
+        JevPanel.mount(this);
     }
 
     start() {
@@ -183,9 +192,6 @@ class JevScene extends Scene {
         this.abortedOnDeath = false;
 
         this.paused = false;
-
-        //the HUD says "tap: hud" for the first few seconds of a flight and then stops
-        this.startedAtMs = jevNow();
 
         this.gameStarted = true;
 
@@ -624,6 +630,8 @@ class JevScene extends Scene {
                 reqId: candidate.reqId,
                 targetFrame: candidate.targetFrame,
                 choice: candidate.choice,
+                //the panel's chart is a line of these, so the apply carries it
+                confidence: candidate.confidence != null ? jevRound2(candidate.confidence) : null,
                 lateBy: lateBy
             });
             this.events++;
@@ -733,8 +741,11 @@ class JevScene extends Scene {
             text(this.bird.score, width/2, 60);
         pop();
 
-        //the HUD goes on top of the flight and under everything that stops it
+        //the overlay goes on top of the flight and under everything that stops it
         JevHud.draw(this);
+
+        //and the panel beside it, which only writes what actually changed
+        JevPanel.update(this);
 
         if (this.bird.live && this.waitingForPilot) {
             push(); //the bird hangs here until the first answer is in
@@ -773,20 +784,15 @@ class JevScene extends Scene {
 
     }
 
-    //full -> minimal -> off -> full, the only control a phone has
-    cycleHud() {
-        this.hudLevel = (this.hudLevel + JEV_HUD_LEVELS - 1) % JEV_HUD_LEVELS;
-    }
-
-    //Jev is the pilot, so a tap on a live bird only moves the HUD; a dead one restarts
+    // Jev is the pilot, so a tap on a live bird does nothing at all; a dead one
+    // starts the next flight. Taps that landed on the panel are the panel's.
     mouseReleased() {
         if (!this.gameStarted) return;
         if (this.bird == null) return;
+        if (JevPanel.tookTap()) return;
+        if (mouseX < 0 || mouseX > width || mouseY < 0 || mouseY > height) return;
 
-        if (this.bird.live) {
-            this.cycleHud();
-            return;
-        }
+        if (this.bird.live) return;
 
         this.start();
     }
@@ -795,8 +801,8 @@ class JevScene extends Scene {
         if (!this.gameStarted) return;
 
         //the debug keys, only ever read here so no other scene sees them
-        if (keyCode === JEV_KEY_HUD) {
-            this.cycleHud();
+        if (keyCode === JEV_KEY_OVERLAY) {
+            this.overlay = !this.overlay;
             return;
         }
         if (keyCode === JEV_KEY_TRACE) {
@@ -829,6 +835,8 @@ class JevScene extends Scene {
         this.waitingForPilot = false;
         this.paused = false;
         this.held = [];
+
+        JevPanel.unmount();
 
         if (this.returnToMenuButton != null) {
             this.returnToMenuButton.remove();
