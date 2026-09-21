@@ -38,8 +38,10 @@ const JEV_TICK_MS = 250; // one question every 250 ms; 100 to 300 all survive in
 //how many requests may be in the air at once
 const JEV_MAX_IN_FLIGHT = 8;
 
-//an answer that missed its frame by more than this is thrown away instead of applied
-const JEV_LATE_FRAMES = 6;
+//a late answer is not thrown away for being late: the premise check decides whether it
+//is still about the world the bird is in. This is only a hard cap (about a second) so an
+//answer from a hidden tab or a frozen frame cannot come back from the dead.
+const JEV_LATE_FRAMES = 60;
 
 //the lead is an EMA of the measured latency, so a slow network widens the prediction
 const JEV_LEAD_ALPHA = 0.3;
@@ -575,7 +577,7 @@ class JevScene extends Scene {
 
             let lateBy = this.frame - candidate.targetFrame;
 
-            //too late to be about this bird any more
+            //hard cap only; a merely late answer goes through the premise check below
             if (lateBy > JEV_LATE_FRAMES) {
                 this.client.stats.stale++;
                 this.writeTrace({

@@ -76,8 +76,8 @@ const REQUEST_TIMEOUT_MS = 10000;
 
 // wider than v2's +-50 ms: the point of v2.1 is that a late answer can still be
 // good, so the mock has to produce plenty of late ones
-const MOCK_LATENCY_MS = 350;
-const MOCK_JITTER_MS = 120;
+const MOCK_LATENCY_MS = Number(process.env.MOCK_LATENCY_MS) || 350; //env override to replay a slow network
+const MOCK_JITTER_MS = Number(process.env.MOCK_JITTER_MS) || 120;
 
 const LEAD_ALPHA = 0.3;
 const LEAD_INITIAL_MS = 400;
@@ -98,7 +98,7 @@ function parseArgs(argv) {
         maxFrames: 3600,
         tickMs: 250,
         maxInFlight: 8,
-        lateFrames: 6,
+        lateFrames: 60, //hard cap only, the premise check decides (matches jev-scene.js)
         leadMs: null,
         noLead: false,
         timeScale: 1,
@@ -439,9 +439,10 @@ function realTransport(apiKey) {
 // hold / supersede / stale behaviour a mock run shows is the harness, not the
 // model.
 function mockChoice(snapshot) {
+    // translator 2.2.0 sends a flat snapshot (bird_position); older ones nested it under bird
     const bird = (snapshot && snapshot.bird) || {};
-    const position = String(bird.position || "");
-    const motion = String(bird.motion || "");
+    const position = String((snapshot && snapshot.bird_position) || bird.position || "");
+    const motion = String((snapshot && snapshot.bird_motion) || bird.motion || "");
 
     if (position === "below the gap") return FLAP;
     if (position === "inside the gap, lower half" && motion !== "rising") return FLAP;
