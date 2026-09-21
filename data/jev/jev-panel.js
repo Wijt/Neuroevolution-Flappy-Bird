@@ -520,7 +520,7 @@ var JevPanel = (function () {
 
         setText(els.rate, decisionRate().toFixed(1) + " /s");
 
-        setText(els.tel["answer time"].value, stats != null && stats.lastLatencyMs ? (stats.lastLatencyMs / 1000).toFixed(2) + " s" : "–");
+        setText(els.tel["answer time"].value, stats != null && stats.lastLatencyMs ? Math.round(stats.lastLatencyMs) + " ms" : "–");
 
         let tokens = stats != null ? Math.max(0, stats.inputTokens - baseTokens) : 0;
         setText(els.tel["tokens this flight"].value, tokens.toLocaleString());
@@ -542,7 +542,7 @@ var JevPanel = (function () {
 
         let frameMs = scene.frameMs || JEV_FRAME_MS;
         let lead = scene.lastSent != null ? scene.lastSent.leadFrames * frameMs / 1000 : null;
-        setText(els.aheadValue, lead != null ? lead.toFixed(2) + " s ahead" : "–");
+        setText(els.aheadValue, lead != null ? Math.round(lead * 1000) + " ms ahead" : "–");
 
         let applied = scene.lastApplied;
         writeProb(els.flap, applied, JevQuestions.FLAP);

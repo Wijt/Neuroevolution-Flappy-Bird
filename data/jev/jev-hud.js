@@ -229,7 +229,7 @@ var JevHud = (function () {
 
             //how far ahead the question was asked, in the seconds it really was
             textFont(JEV_HUD_MONO);
-            text("in " + leadSeconds(scene).toFixed(2) + " s", x, top + head + bar + small * 1.4 + 3);
+            text("in " + Math.round(leadSeconds(scene) * 1000) + " ms", x, top + head + bar + small * 1.4 + 3);
         pop();
     }
 
