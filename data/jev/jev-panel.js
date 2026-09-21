@@ -305,6 +305,8 @@ var JevPanel = (function () {
 
     //what the counters stood at when this flight began; the stats are per session
     var flightStartMs = 0;
+    //set when the bird dies, so the clock and the rates stop with the flight
+    var flightEndMs = null;
     var baseApplied = 0;
     var baseTokens = 0;
     var bestScore = 0;
@@ -321,6 +323,7 @@ var JevPanel = (function () {
         ticks.length = 0;
         chartSeen = scene.traceCount != null ? scene.traceCount : 0;
         flightStartMs = now();
+        flightEndMs = null;
         let stats = scene.client != null ? scene.client.stats : null;
         baseApplied = stats != null ? stats.applied : 0;
         baseTokens = stats != null ? stats.inputTokens : 0;
@@ -508,7 +511,13 @@ var JevPanel = (function () {
 
     function writeSlow(scene) {
         let stats = scene.client != null ? scene.client.stats : null;
-        let seconds = Math.max(0.001, (now() - flightStartMs) / 1000);
+        //a dead bird stops the clock; the next flight starts it again
+        if (scene.bird != null && !scene.bird.live) {
+            if (flightEndMs == null) flightEndMs = now();
+        } else {
+            flightEndMs = null;
+        }
+        let seconds = Math.max(0.001, ((flightEndMs != null ? flightEndMs : now()) - flightStartMs) / 1000);
 
         setText(els.flight, "flight " + pad3(scene.runId).slice(1));
 
