@@ -309,7 +309,26 @@ var JevPanel = (function () {
     var flightEndMs = null;
     var baseApplied = 0;
     var baseTokens = 0;
-    var bestScore = 0;
+    //the best score survives reloads and server restarts; it lives in this browser only
+    var BEST_KEY = "flappy-jev-best";
+    var bestScore = readBest();
+
+    function readBest() {
+        try {
+            let stored = parseInt(window.localStorage.getItem(BEST_KEY), 10);
+            return stored > 0 ? stored : 0;
+        } catch (e) {
+            return 0;
+        }
+    }
+
+    function saveBest(value) {
+        try {
+            window.localStorage.setItem(BEST_KEY, String(value));
+        } catch (e) {
+            //storage blocked or full: the session still keeps the number
+        }
+    }
 
     function ink(name, fallback) {
         let value = getComputedStyle(root).getPropertyValue(name).trim();
@@ -523,7 +542,10 @@ var JevPanel = (function () {
 
         //the three big numbers of this flight
         let score = scene.bird != null ? scene.bird.score : 0;
-        if (score > bestScore) bestScore = score;
+        if (score > bestScore) {
+            bestScore = score;
+            saveBest(bestScore);
+        }
         setText(els.score.value, pad3(score));
         setText(els.best.value, pad3(bestScore));
 
