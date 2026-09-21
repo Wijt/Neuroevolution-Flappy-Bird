@@ -75,8 +75,8 @@ body {
     /* the game's colours: its background, its pipe blue for lines */
     --page: #1b1b2f;
     --line: #2a3556;
-    --text: #e6edf3;
-    --muted: #7d88a8;
+    --text: #f2f5fa;
+    --muted: #a3adc9;
     --teal: #3ddc97;
     --amber: #f5b342;
     --blue: #4aa3ff;
@@ -95,8 +95,9 @@ body {
     background: var(--page);
     color: var(--text);
     font-family: "IBM Plex Mono", ui-monospace, Consolas, monospace;
-    font-size: 12px;
-    line-height: 1.35;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 1.4;
 }
 
 /* the canvas is moved into the box, so it is the only thing above the page */
@@ -107,14 +108,16 @@ body {
 /* ---- the shared bits ---- */
 .jd-cap {
     color: var(--muted);
-    font-size: 11px;
-    letter-spacing: 0.04em;
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.03em;
     white-space: nowrap;
 }
 
 .jd-val {
     color: var(--text);
-    font-size: 12px;
+    font-size: 14px;
+    font-weight: 500;
     font-variant-numeric: tabular-nums;
 }
 
@@ -261,7 +264,8 @@ body {
     display: flex;
     align-items: baseline;
     gap: 10px;
-    font-size: 15px;
+    font-size: 17px;
+    font-weight: 600;
 }
 
 .jd-section {
@@ -300,9 +304,10 @@ body {
 }
 
 .jd-name {
-    width: 52px;
+    width: 56px;
     color: var(--muted);
-    font-size: 11px;
+    font-size: 13px;
+    font-weight: 500;
 }
 
 .jd-track {
@@ -344,7 +349,7 @@ body {
     padding: 6px 0 2px;
 }
 
-.jd-exec-value { font-size: 13px; }
+.jd-exec-value { font-size: 15px; font-weight: 600; }
 .jd-exec-value.jd-flap { color: var(--flap); }
 
 /* the two gauges: one hairline with a coloured length on it */

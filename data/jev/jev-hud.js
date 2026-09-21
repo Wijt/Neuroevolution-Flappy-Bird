@@ -88,7 +88,8 @@ var JevHud = (function () {
         let gap = sent.gap;
         let r = JEV_COLLISION_R;
         let ghostY = sent.predicted.birdY;
-        let small = width / 34;
+        //never below 12 px, the phone would make the numbers unreadable otherwise
+        let small = Math.max(12, width / 30);
 
         //the labels sit outside the bird, whichever way they go
         let leftEdge = BIRD_X - BIRD_R - 6;
