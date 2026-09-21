@@ -21,7 +21,9 @@
 // JevBird, JevPipe and the lead conversion all read it on the frame they run.
 var JEV_TIME_SCALE = 4; // the jev world runs this many times slower than the other scenes
 
-//one draw frame is worth this much game time
+//one draw frame is worth this much game time. Measured from the real frame time every
+//frame, so "1/4 speed" means the same thing on a 60 Hz and a 144 Hz display: the world
+//advances 60 game frames per 4 seconds of wall clock either way.
 var JEV_DT = 1 / JEV_TIME_SCALE;
 
 //the only way the speed ever changes; dt follows on the very next frame
@@ -368,6 +370,10 @@ class JevScene extends Scene {
     noteFrameTime() {
         let dt = (typeof deltaTime === "number" && deltaTime > 4 && deltaTime < 100) ? deltaTime : JEV_FRAME_MS;
         this.frameMs = this.frameMs ? this.frameMs * 0.9 + dt * 0.1 : dt;
+
+        //physics is stepped in wall-clock time: a 12 ms frame on a fast display advances
+        //the world less than a 17 ms one, so the speed is the same on every screen
+        JEV_DT = (dt / JEV_FRAME_MS) / JEV_TIME_SCALE;
     }
 
     maybeSend() {
