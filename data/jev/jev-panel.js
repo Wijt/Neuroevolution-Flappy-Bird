@@ -227,7 +227,10 @@ var JevPanel = (function () {
         //#endregion
 
         //a click anywhere in here is the dashboard's, not the game's
-        root.addEventListener("pointerup", () => {
+        //a click on the dashboard is the dashboard's, not the game's; the canvas lives
+        //inside the dashboard now, so a tap on the flight itself is left to the game
+        root.addEventListener("pointerup", event => {
+            if (event.target != null && event.target.tagName === "CANVAS") return;
             tapAt = now();
         }, true);
     }
